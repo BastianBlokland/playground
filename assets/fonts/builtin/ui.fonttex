@@ -1,0 +1,29 @@
+{
+  "size": 2048,
+  "glyphSize": 64,
+  "border": 15,
+  "lineSpacing": 0.2,
+  "baseline": 0.3,
+  "fonts": [
+    {
+      "id": "fonts/roboto_medium.ttf",
+      "spacing": 0.05,
+      "characters": "\u0020!\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~ãńïŻ§ÁÅ¨½´º¡ÌÈ²ÀÉÇ«Üßüàéèçóőúå"
+    },
+    {
+      "id": "fonts/robotomono_medium.ttf",
+      "variation": 1,
+      "spacing": 0.05,
+      "characters": "\u0020!\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~ãńïŻ§ÁÅ¨½´º¡ÌÈ²ÀÉÇ«Üßüàéèçóőúå"
+    },
+    {
+      "id": "fonts/materialicons_regular.ttf",
+      "yOffset": -0.15,
+      "characters": "\uE3AE\uE1DB\uE069\uE4FC\uE80E\uE5CA\uE9BA\uE5D0\uE89E\uE5CD\uF016\uE412\uE25E\uE5CF\uE5CE\uE5D7\uE5D6\uE9FE\uE87B\uE425\uF230\uEA3C\uE92B\uE162\uE145\uE518\uE8B8\uE322\uE429\uE8F4\uE80B\uE405\uE574\uE868\uE050\uE04F\uE3F4\uE034\uF053\uE7EF\uE161\uE873\uE3EA\uE645\uE871\uF10D\uE798\uE548\uE838\uEF42\uEAD5\uE92C\uE037\uE3C9\uE890\uE897\uE53B\uE14D\uF102\uE97A\uE5C4\uE9D9\uE769\uE312\uEA79\uE87D\uE7F2\uE99A\uE32A\uEF56\uE1D5\uE01F\uEB8B\uE3F7"
+    },
+    {
+      "id": "fonts/shapes.ttf",
+      "characters": "\uF000\uF001\uF002\uF003\uF004"
+    }
+  ]
+}

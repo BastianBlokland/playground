@@ -1,0 +1,10 @@
+{
+  "pass": "Shadow",
+  "shaders": [
+    { "program": "shaders/dyn_depth_standard.vert" },
+    { "program": "shaders/dyn_depth.frag" }
+  ],
+  "depthClamp": true,
+  "depthBiasConstant": -1,
+  "depthBiasSlope": -10
+}

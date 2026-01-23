@@ -1,0 +1,13 @@
+# --------------------------------------------------------------------------------------------------
+# Editor config file containing settings for this project.
+# https://editorconfig.org/
+# --------------------------------------------------------------------------------------------------
+
+# All files.
+[*]
+charset = utf-8
+trim_trailing_whitespace = true
+end_of_line = lf
+insert_final_newline = true
+indent_size = 2
+indent_style = space

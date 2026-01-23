@@ -1,0 +1,389 @@
+#include "core/alloc.h"
+#include "core/array.h"
+#include "core/bits.h"
+#include "core/diag.h"
+#include "core/format.h"
+#include "core/math.h"
+#include "script/args.h"
+#include "script/binder.h"
+#include "script/enum.h"
+#include "script/sig.h"
+#include "script/val.h"
+
+#include "import.h"
+#include "import_texture.h"
+
+ScriptBinder* g_assetScriptImportTextureBinder;
+
+static ScriptEnum g_importTextureFlags, g_importTexturePixelType;
+
+static void import_init_enum_flags(void) {
+#define ENUM_PUSH(_ENUM_, _NAME_)                                                                  \
+  script_enum_push((_ENUM_), string_hash_lit(#_NAME_), AssetImportTextureFlags_##_NAME_);
+
+  ENUM_PUSH(&g_importTextureFlags, Lossless);
+  ENUM_PUSH(&g_importTextureFlags, Linear);
+  ENUM_PUSH(&g_importTextureFlags, Mips);
+  ENUM_PUSH(&g_importTextureFlags, BroadcastR);
+
+#undef ENUM_PUSH
+}
+
+static void import_init_enum_pixel_type(void) {
+#define ENUM_PUSH(_ENUM_, _NAME_)                                                                  \
+  script_enum_push((_ENUM_), string_hash_lit(#_NAME_), AssetTextureType_##_NAME_);
+
+  ENUM_PUSH(&g_importTexturePixelType, u8);
+  ENUM_PUSH(&g_importTexturePixelType, u16);
+  ENUM_PUSH(&g_importTexturePixelType, f32);
+
+#undef ENUM_PUSH
+}
+
+static u32 import_texture_type_size(const AssetTextureType type) {
+  switch (type) {
+  case AssetTextureType_u8:
+    return sizeof(u8);
+  case AssetTextureType_u16:
+    return sizeof(u16);
+  case AssetTextureType_f32:
+    return sizeof(f32);
+  }
+  UNREACHABLE
+}
+
+/**
+ * Compute how many times we can cut the image in half before both sides hit 1 pixel.
+ */
+static u16 import_texture_mips_max(const u32 width, const u32 height) {
+  const u16 biggestSide = math_max(width, height);
+  const u16 mipCount    = (u16)(32 - bits_clz_32(biggestSide));
+  return mipCount;
+}
+
+typedef struct {
+  AssetImportTextureFlags flags;
+  AssetImportTextureFlip  flip;
+  u32                     width, height, layers;
+  u32                     mips; // 0 indicates maximum number of mips.
+  u32                     channels;
+  AssetTextureType        type;
+  Mem                     data;
+  u32                     dataWidth, dataHeight, dataChannels;
+  AssetTextureType        dataType;
+} AssetImportTexture;
+
+static ScriptVal import_eval_pow2_test(AssetImportContext* ctx, ScriptBinderCall* call) {
+  (void)ctx;
+  const i32 val = script_arg_num(call, 0);
+  return script_bool(bits_ispow2_64((u64)val));
+}
+
+static ScriptVal import_eval_pow2_next(AssetImportContext* ctx, ScriptBinderCall* call) {
+  (void)ctx;
+  const i32 val = script_arg_num_clamped(call, 0, 1, i32_max);
+  return script_num((i32)bits_nextpow2_32((u32)val));
+}
+
+static ScriptVal import_eval_texture_channels(AssetImportContext* ctx, ScriptBinderCall* call) {
+  AssetImportTexture* data = ctx->data;
+  if (call->argCount < 1) {
+    return script_num(data->channels);
+  }
+  const u32 newChannels = (u32)script_arg_num_clamped(call, 0, 1, 4);
+  diag_assert(newChannels >= 1 && newChannels <= 4);
+  data->channels = newChannels;
+  return script_null();
+}
+
+static ScriptVal import_eval_texture_flag(AssetImportContext* ctx, ScriptBinderCall* call) {
+  const i32           flag = script_arg_enum(call, 0, &g_importTextureFlags);
+  AssetImportTexture* data = ctx->data;
+  if (call->argCount < 2) {
+    return script_bool((data->flags & flag) != 0);
+  }
+  const bool enabled = script_arg_bool(call, 1);
+  if (enabled != !!(data->flags & flag)) {
+    data->flags ^= flag;
+  }
+  return script_null();
+}
+
+static ScriptVal import_eval_texture_type(AssetImportContext* ctx, ScriptBinderCall* call) {
+  AssetImportTexture* data = ctx->data;
+  if (call->argCount < 1) {
+    return script_str(script_enum_lookup_name(&g_importTexturePixelType, data->type));
+  }
+  data->type = (AssetTextureType)script_arg_enum(call, 0, &g_importTexturePixelType);
+  return script_null();
+}
+
+static ScriptVal import_eval_texture_width(AssetImportContext* ctx, ScriptBinderCall* call) {
+  (void)call;
+  AssetImportTexture* data = ctx->data;
+  return script_num(data->width);
+}
+
+static ScriptVal import_eval_texture_height(AssetImportContext* ctx, ScriptBinderCall* call) {
+  (void)call;
+  AssetImportTexture* data = ctx->data;
+  return script_num(data->height);
+}
+
+static ScriptVal import_eval_texture_layers(AssetImportContext* ctx, ScriptBinderCall* call) {
+  (void)call;
+  AssetImportTexture* data = ctx->data;
+  return script_num(data->layers);
+}
+
+static ScriptVal import_eval_texture_mips(AssetImportContext* ctx, ScriptBinderCall* call) {
+  AssetImportTexture* data = ctx->data;
+  if (call->argCount) {
+    const u32 mipsMax = import_texture_mips_max(data->width, data->height);
+    data->mips        = (u32)script_arg_num_clamped(call, 0, 0, mipsMax);
+    if (data->mips == 1) {
+      data->flags &= ~AssetImportTextureFlags_Mips;
+    } else {
+      data->flags |= AssetImportTextureFlags_Mips;
+    }
+    return script_null();
+  }
+  if (data->flags & AssetImportTextureFlags_Mips) {
+    u32 res = data->mips;
+    if (res) {
+      res = math_min(res, import_texture_mips_max(data->width, data->height));
+    } else {
+      res = import_texture_mips_max(data->width, data->height);
+    }
+    return script_num(res);
+  }
+  return script_num(1);
+}
+
+static ScriptVal import_eval_texture_mips_max(AssetImportContext* ctx, ScriptBinderCall* call) {
+  (void)call;
+  AssetImportTexture* data = ctx->data;
+  return script_num(import_texture_mips_max(data->width, data->height));
+}
+
+static ScriptVal import_eval_texture_flip_y(AssetImportContext* ctx, ScriptBinderCall* call) {
+  (void)call;
+  AssetImportTexture* data = ctx->data;
+  data->flip ^= AssetImportTextureFlip_Y;
+  return script_null();
+}
+
+static ScriptVal import_eval_texture_resize(AssetImportContext* ctx, ScriptBinderCall* call) {
+  AssetImportTexture* data = ctx->data;
+  data->width              = (u32)script_arg_num_clamped(call, 0, 1, 1024 * 16);
+  data->height             = (u32)script_arg_num_clamped(call, 1, 1, 1024 * 16);
+  return script_null();
+}
+
+void asset_data_init_import_texture(const bool devSupport) {
+  import_init_enum_flags();
+  import_init_enum_pixel_type();
+
+  ScriptBinderFlags flags = ScriptBinderFlags_DisallowMemoryAccess;
+  if (devSupport) {
+    flags |= ScriptBinderFlags_DevSupport;
+  }
+  ScriptBinder* binder = script_binder_create(g_allocPersist, string_lit("import-texture"), flags);
+  script_binder_filter_set(binder, string_lit("import/texture/*.script"));
+
+  // clang-format off
+  static const String g_flagsDoc     = string_static("Supported flags:\n\n-`Lossless`\n\n-`Linear`\n\n-`Mips`\n\n-`BroadcastR`");
+  static const String g_pixelTypeDoc = string_static("Supported types:\n\n-`u8`\n\n-`u16`\n\n-`f32`");
+  {
+    const String       name   = string_lit("pow2_test");
+    const String       doc    = string_lit("Check if the given value is a power of two.");
+    const ScriptMask   ret    = script_mask_bool;
+    const ScriptSigArg args[] = {
+        {string_lit("value"), script_mask_num},
+    };
+    asset_import_bind(binder, name, doc, ret, args, array_elems(args), import_eval_pow2_test);
+  }
+  {
+    const String       name   = string_lit("pow2_next");
+    const String       doc    = string_lit("Return the next power of two greater or equal to the given value.");
+    const ScriptMask   ret    = script_mask_num;
+    const ScriptSigArg args[] = {
+        {string_lit("value"), script_mask_num},
+    };
+    asset_import_bind(binder, name, doc, ret, args, array_elems(args), import_eval_pow2_next);
+  }
+  {
+    const String       name   = string_lit("texture_channels");
+    const String       doc    = string_lit("Query or change the amount of channels in the texture.");
+    const ScriptMask   ret    = script_mask_num | script_mask_null;
+    const ScriptSigArg args[] = {
+        {string_lit("channels"), script_mask_num | script_mask_null},
+    };
+    asset_import_bind(binder, name, doc, ret, args, array_elems(args), import_eval_texture_channels);
+  }
+  {
+    const String       name   = string_lit("texture_flag");
+    const String       doc    = fmt_write_scratch("Query or change a texture import flag.\n\n{}", fmt_text(g_flagsDoc));
+    const ScriptMask   ret    = script_mask_bool | script_mask_null;
+    const ScriptSigArg args[] = {
+        {string_lit("flag"), script_mask_str},
+        {string_lit("enable"), script_mask_bool | script_mask_null},
+    };
+    asset_import_bind(binder, name, doc, ret, args, array_elems(args), import_eval_texture_flag);
+  }
+  {
+    const String       name   = string_lit("texture_type");
+    const String       doc    = fmt_write_scratch("Query or change the texture pixel type.\n\n{}", fmt_text(g_pixelTypeDoc));
+    const ScriptMask   ret    = script_mask_str;
+    asset_import_bind(binder, name, doc, ret, null, 0, import_eval_texture_type);
+  }
+  {
+    const String       name   = string_lit("texture_width");
+    const String       doc    = string_lit("Query the texture width in pixels.");
+    const ScriptMask   ret    = script_mask_num;
+    asset_import_bind(binder, name, doc, ret, null, 0, import_eval_texture_width);
+  }
+  {
+    const String       name   = string_lit("texture_height");
+    const String       doc    = string_lit("Query the texture height in pixels.");
+    const ScriptMask   ret    = script_mask_num;
+    asset_import_bind(binder, name, doc, ret, null, 0, import_eval_texture_height);
+  }
+  {
+    const String       name   = string_lit("texture_layers");
+    const String       doc    = string_lit("Query the amount of texture layers.");
+    const ScriptMask   ret    = script_mask_num;
+    asset_import_bind(binder, name, doc, ret, null, 0, import_eval_texture_layers);
+  }
+  {
+    const String       name   = string_lit("texture_mips");
+    const String       doc    = string_lit("Query or change the amount of mip levels.\nNote: Provide 0 to set the maximum amount of mips.");
+    const ScriptMask   ret    = script_mask_num | script_mask_null;
+    const ScriptSigArg args[] = {
+        {string_lit("mips"), script_mask_num | script_mask_null},
+    };
+    asset_import_bind(binder, name, doc, ret, args, array_elems(args), import_eval_texture_mips);
+  }
+  {
+    const String       name   = string_lit("texture_mips_max");
+    const String       doc    = string_lit("Query the maximum amount of mip levels.");
+    const ScriptMask   ret    = script_mask_num;
+    asset_import_bind(binder, name, doc, ret, null, 0, import_eval_texture_mips_max);
+  }
+  {
+    const String       name   = string_lit("texture_flip_y");
+    const String       doc    = string_lit("Apply a y axis mirror.");
+    const ScriptMask   ret    = script_mask_null;
+    asset_import_bind(binder, name, doc, ret, null, 0, import_eval_texture_flip_y);
+  }
+  {
+    const String       name   = string_lit("texture_resize");
+    const String       doc    = string_lit("Resize the current texture.");
+    const ScriptMask   ret    = script_mask_null;
+    const ScriptSigArg args[] = {
+        {string_lit("width"), script_mask_num},
+        {string_lit("height"), script_mask_num},
+    };
+    asset_import_bind(binder, name, doc, ret, args, array_elems(args), import_eval_texture_resize);
+  }
+  // clang-format on
+
+  asset_import_register(binder);
+
+  script_binder_finalize(binder);
+  g_assetScriptImportTextureBinder = binder;
+}
+
+bool asset_import_texture(
+    const AssetImportEnvComp*     env,
+    const String                  id,
+    const Mem                     data,
+    const u32                     width,
+    const u32                     height,
+    const u32                     channels,
+    const AssetTextureType        type,
+    const AssetImportTextureFlags importFlags,
+    const AssetImportTextureFlip  importFlip,
+    AssetTextureComp*             out) {
+
+  Mem  outMem       = data;
+  bool outMemOwning = false;
+  bool success      = false;
+
+  diag_assert(data.size == width * height * channels * import_texture_type_size(type));
+
+  AssetImportTexture ctx = {
+      .flags        = importFlags,
+      .flip         = importFlip,
+      .width        = width,
+      .height       = height,
+      .channels     = channels,
+      .type         = type,
+      .layers       = 1,
+      .data         = data,
+      .dataWidth    = width,
+      .dataHeight   = height,
+      .dataChannels = channels,
+      .dataType     = type,
+  };
+  if (!asset_import_eval(env, g_assetScriptImportTextureBinder, id, &ctx)) {
+    goto Ret;
+  }
+
+  // Apply resize.
+  if (ctx.width != width || ctx.height != height || ctx.channels != channels || ctx.type != type) {
+    const u32   dstPixelCount = ctx.width * ctx.height;
+    const usize dstTypeSize   = import_texture_type_size(ctx.type);
+
+    outMem = alloc_alloc(g_allocHeap, dstPixelCount * ctx.channels * dstTypeSize, dstTypeSize);
+    outMemOwning = true;
+
+    asset_texture_convert(
+        data, width, height, channels, type, outMem, ctx.width, ctx.height, ctx.channels, ctx.type);
+  }
+
+  // Apply flip.
+  if (ctx.flip & AssetImportTextureFlip_Y) {
+    asset_texture_flip_y(outMem, ctx.width, ctx.height, ctx.channels, ctx.type);
+  }
+
+  AssetTextureFlags outFlags = 0;
+  if (ctx.flags & AssetImportTextureFlags_Mips) {
+    outFlags |= AssetTextureFlags_GenerateMips;
+  }
+  if (ctx.flags & AssetImportTextureFlags_Linear) {
+    // Explicitly linear.
+  } else if (ctx.channels >= 3 && ctx.type == AssetTextureType_u8) {
+    outFlags |= AssetTextureFlags_Srgb;
+  }
+  if (ctx.flags & AssetImportTextureFlags_Lossless) {
+    outFlags |= AssetTextureFlags_Lossless;
+  }
+  if (ctx.flags & AssetImportTextureFlags_BroadcastR) {
+    outFlags |= AssetTextureFlags_BroadcastR;
+  }
+
+  if (outFlags & AssetTextureFlags_Srgb && ctx.channels < 3) {
+    goto Ret;
+  }
+
+  // Output texture.
+  *out = asset_texture_create(
+      outMem,
+      ctx.width,
+      ctx.height,
+      ctx.channels,
+      ctx.layers,
+      1 /* mipsSrc */,
+      ctx.mips,
+      ctx.type,
+      outFlags);
+
+  success = true;
+
+Ret:
+  if (outMemOwning) {
+    alloc_free(g_allocHeap, outMem);
+  }
+  return success;
+}

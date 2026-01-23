@@ -1,0 +1,347 @@
+#include "core/alloc.h"
+#include "core/array.h"
+#include "core/dynstring.h"
+#include "core/format.h"
+#include "core/math.h"
+#include "dev/asset.h"
+#include "dev/ecs.h"
+#include "dev/hash.h"
+#include "dev/input.h"
+#include "dev/interface.h"
+#include "dev/menu.h"
+#include "dev/panel.h"
+#include "dev/rend.h"
+#include "dev/sound.h"
+#include "dev/stats.h"
+#include "dev/trace.h"
+#include "ecs/utils.h"
+#include "ecs/view.h"
+#include "ecs/world.h"
+#include "gap/window.h"
+#include "input/manager.h"
+#include "rend/settings.h"
+#include "ui/canvas.h"
+#include "ui/shape.h"
+#include "ui/table.h"
+#include "ui/widget.h"
+
+// clang-format off
+
+static const String  g_menuChildTooltipOpen       = string_static("Open the \a.b{}\ar panel.");
+static const String  g_menuChildTooltipClose      = string_static("Close the \a.b{}\ar panel.");
+static const String  g_menuChildTooltipDetach     = string_static("\a.bNote:\ar Hold \a.bControl\ar while clicking to open it detached.");
+static const UiColor g_menuChildFrameColorNormal  = {32, 32, 32, 192};
+static const UiColor g_menuChildFrameColorOpen    = {96, 96, 96, 255};
+
+// clang-format on
+
+typedef EcsEntityId (*ChildOpenFunc)(EcsWorld*, EcsEntityId, DevPanelType);
+
+static const struct {
+  String        name;
+  u32           iconShape;
+  bool          openOnEdit;
+  GapVector     detachedSize;
+  ChildOpenFunc openFunc;
+  StringHash    hotkey;
+} g_menuChildConfig[] = {
+    {
+        .name         = string_static("Sound"),
+        .iconShape    = UiShape_MusicNote,
+        .detachedSize = {.x = 800, .y = 685},
+        .openFunc     = dev_sound_panel_open,
+        .hotkey       = DevHash_DevPanelSound,
+    },
+    {
+        .name         = string_static("Ecs"),
+        .iconShape    = UiShape_Extension,
+        .detachedSize = {.x = 800, .y = 500},
+        .openFunc     = dev_ecs_panel_open,
+        .hotkey       = DevHash_DevPanelEcs,
+    },
+    {
+        .name         = string_static("Renderer"),
+        .iconShape    = UiShape_Brush,
+        .detachedSize = {.x = 800, .y = 520},
+        .openFunc     = dev_rend_panel_open,
+        .hotkey       = DevHash_DevPanelRenderer,
+    },
+#ifdef VOLO_TRACE
+    {
+        .name         = string_static("Trace"),
+        .iconShape    = UiShape_QueryStats,
+        .detachedSize = {.x = 800, .y = 500},
+        .openFunc     = dev_trace_panel_open,
+        .hotkey       = DevHash_DevPanelTrace,
+    },
+#endif
+    {
+        .name         = string_static("Asset"),
+        .iconShape    = UiShape_Storage,
+        .detachedSize = {.x = 950, .y = 500},
+        .openFunc     = dev_asset_panel_open,
+    },
+    {
+        .name         = string_static("Input"),
+        .iconShape    = UiShape_Keyboard,
+        .detachedSize = {.x = 500, .y = 190},
+        .openFunc     = dev_input_panel_open,
+    },
+    {
+        .name         = string_static("Interface"),
+        .iconShape    = UiShape_FormatShapes,
+        .detachedSize = {.x = 500, .y = 190},
+        .openFunc     = dev_interface_panel_open,
+    },
+};
+
+static String
+menu_child_tooltip_scratch(const u32 childIndex, const bool open, const bool allowDetach) {
+  Mem       scratchMem = alloc_alloc(g_allocScratch, 1024, 1);
+  DynString str        = dynstring_create_over(scratchMem);
+
+  format_write_formatted(
+      &str,
+      open ? g_menuChildTooltipClose : g_menuChildTooltipOpen,
+      fmt_args(fmt_text(g_menuChildConfig[childIndex].name)));
+
+  if (!open && allowDetach) {
+    dynstring_append_char(&str, '\n');
+    dynstring_append(&str, g_menuChildTooltipDetach);
+  }
+
+  return dynstring_view(&str);
+}
+
+ecs_comp_define(DevMenuComp) {
+  EcsEntityId window;
+  EcsEntityId menuEntity;
+  EcsEntityId childEntities[array_elems(g_menuChildConfig)];
+  u64         detachedChildren; // Bitset that indicates if child window are detached or not.
+};
+
+ecs_comp_define(DevMenuOwnerComp) { EcsEntityId owner; };
+
+ecs_view_define(GlobalView) {
+  ecs_access_read(InputManagerComp);
+  ecs_access_write(DevStatsGlobalComp);
+}
+ecs_view_define(PanelUpdateView) {
+  ecs_access_read(DevPanelComp);
+  ecs_access_write(DevMenuComp);
+  ecs_access_write(UiCanvasComp);
+}
+ecs_view_define(OwnerView) { ecs_access_read(DevMenuOwnerComp); }
+ecs_view_define(CanvasView) { ecs_access_read(UiCanvasComp); }
+ecs_view_define(WindowView) { ecs_access_read(GapWindowComp); }
+
+static void
+menu_notify_child_state(DevStatsGlobalComp* statsGlobal, const u32 childIndex, const String state) {
+  dev_stats_notify(
+      statsGlobal,
+      fmt_write_scratch("Panel {}", fmt_text(g_menuChildConfig[childIndex].name)),
+      state);
+}
+
+static bool menu_child_is_open(EcsWorld* world, const DevMenuComp* menu, const u32 childIndex) {
+  const EcsEntityId childEntity = menu->childEntities[childIndex];
+  return childEntity && ecs_world_exists(world, childEntity);
+}
+
+static void menu_child_open(
+    EcsWorld* world, DevMenuComp* menu, const EcsEntityId menuEntity, const u32 childIndex) {
+  const DevPanelType type  = DevPanelType_Normal;
+  const EcsEntityId  panel = g_menuChildConfig[childIndex].openFunc(world, menu->window, type);
+  ecs_world_add_t(world, panel, DevMenuOwnerComp, .owner = menuEntity);
+  menu->childEntities[childIndex] = panel;
+  menu->detachedChildren &= ~(u64_lit(1) << childIndex);
+}
+
+static void menu_child_open_detached(
+    EcsWorld*         world,
+    UiCanvasComp*     canvas,
+    DevMenuComp*      menu,
+    const EcsEntityId menuEntity,
+    const u32         childIndex) {
+  const f32 scale = ui_canvas_scale(canvas);
+
+  GapVector size = g_menuChildConfig[childIndex].detachedSize;
+
+  size = (GapVector){
+      .x = (i32)math_round_up_f32((size.x ? size.x : 500) * scale),
+      .y = (i32)math_round_up_f32((size.y ? size.y : 500) * scale),
+  };
+
+  const GapWindowMode  mode           = GapWindowMode_Windowed;
+  const GapWindowFlags flags          = GapWindowFlags_CloseOnRequest;
+  const GapIcon        icon           = GapIcon_Tool;
+  const String         title          = g_menuChildConfig[childIndex].name;
+  const EcsEntityId    detachedWindow = gap_window_create(world, mode, flags, size, icon, title);
+  RendSettingsComp*    rendSettings   = rend_settings_window_init(world, detachedWindow);
+
+  // No vsync on the detached window to not interfere with vsync of the main window.
+  rendSettings->flags    = RendFlags_2D;
+  rendSettings->syncMode = RendSyncMode_Immediate;
+
+  const DevPanelType type  = DevPanelType_Detached;
+  const EcsEntityId  panel = g_menuChildConfig[childIndex].openFunc(world, detachedWindow, type);
+
+  ecs_world_add_t(world, detachedWindow, DevMenuOwnerComp, .owner = panel);
+  ecs_world_add_t(world, panel, DevMenuOwnerComp, .owner = menuEntity);
+
+  menu->childEntities[childIndex] = panel;
+  menu->detachedChildren |= u64_lit(1) << childIndex;
+}
+
+static EcsEntityId menu_child_topmost(EcsWorld* world, const DevMenuComp* menu) {
+  EcsEntityId topmost      = 0;
+  i32         topmostOrder = i32_min;
+  for (u32 childIndex = 0; childIndex != array_elems(menu->childEntities); ++childIndex) {
+    if (menu_child_is_open(world, menu, childIndex)) {
+      const EcsEntityId   childEntity = menu->childEntities[childIndex];
+      const UiCanvasComp* canvas = ecs_utils_read_t(world, CanvasView, childEntity, UiCanvasComp);
+      if (ui_canvas_order(canvas) >= topmostOrder) {
+        topmost      = childEntity;
+        topmostOrder = ui_canvas_order(canvas);
+      }
+    }
+  }
+  return topmost;
+}
+
+static bool menu_child_hotkey_pressed(const InputManagerComp* input, const u32 childIndex) {
+  if (!g_menuChildConfig[childIndex].hotkey) {
+    return false;
+  }
+  return input_triggered(input, g_menuChildConfig[childIndex].hotkey);
+}
+
+static void menu_action_bar_draw(
+    EcsWorld*               world,
+    const EcsEntityId       menuEntity,
+    UiCanvasComp*           canvas,
+    const InputManagerComp* input,
+    DevMenuComp*            menu,
+    DevStatsGlobalComp*     statsGlobal,
+    const EcsEntityId       winEntity,
+    const GapWindowComp*    win) {
+
+  UiTable table = ui_table(.align = UiAlign_TopRight, .rowHeight = 35);
+  ui_table_add_column(&table, UiTableColumn_Fixed, 45);
+
+  const bool allowDetach = gap_window_mode(win) == GapWindowMode_Windowed;
+
+  const bool windowActive = input_active_window(input) == winEntity;
+  const u32  rows         = 1 /* Icon */ + array_elems(g_menuChildConfig) /* Panels */;
+  ui_table_draw_bg(canvas, &table, rows, ui_color(178, 0, 0, 192));
+
+  ui_table_next_row(canvas, &table);
+  ui_canvas_draw_glyph(canvas, UiShape_Wire, 0, UiFlags_Interactable | UiFlags_SquareAspect);
+
+  // Panel open / close.
+  for (u32 childIndex = 0; childIndex != array_elems(g_menuChildConfig); ++childIndex) {
+    ui_table_next_row(canvas, &table);
+    const bool isOpen = menu_child_is_open(world, menu, childIndex);
+
+    if (ui_button(
+            canvas,
+            .label      = ui_shape_scratch(g_menuChildConfig[childIndex].iconShape),
+            .fontSize   = 25,
+            .tooltip    = menu_child_tooltip_scratch(childIndex, isOpen, allowDetach),
+            .frameColor = isOpen ? g_menuChildFrameColorOpen : g_menuChildFrameColorNormal,
+            .activate   = windowActive && menu_child_hotkey_pressed(input, childIndex))) {
+
+      if (isOpen) {
+        ecs_world_entity_destroy(world, menu->childEntities[childIndex]);
+        menu->childEntities[childIndex] = 0;
+        menu_notify_child_state(statsGlobal, childIndex, string_lit("closed"));
+      } else if (allowDetach && (input_modifiers(input) & InputModifier_Control)) {
+        menu_child_open_detached(world, canvas, menu, menuEntity, childIndex);
+        menu_notify_child_state(statsGlobal, childIndex, string_lit("open detached"));
+      } else {
+        menu_child_open(world, menu, menuEntity, childIndex);
+        menu_notify_child_state(statsGlobal, childIndex, string_lit("open"));
+      }
+    }
+  }
+}
+
+ecs_system_define(DevMenuUpdateSys) {
+  EcsView*     globalView = ecs_world_view_t(world, GlobalView);
+  EcsIterator* globalItr  = ecs_view_maybe_at(globalView, ecs_world_global(world));
+  if (!globalItr) {
+    return; // Global dependencies not initialized yet.
+  }
+  const InputManagerComp* input       = ecs_view_read_t(globalItr, InputManagerComp);
+  DevStatsGlobalComp*     statsGlobal = ecs_view_write_t(globalItr, DevStatsGlobalComp);
+
+  EcsView*     windowView = ecs_world_view_t(world, WindowView);
+  EcsIterator* windowItr  = ecs_view_itr(windowView);
+
+  EcsView* menuView = ecs_world_view_t(world, PanelUpdateView);
+  for (EcsIterator* itr = ecs_view_itr(menuView); ecs_view_walk(itr);) {
+    const EcsEntityId panelEntity = ecs_view_entity(itr);
+    DevMenuComp*      menu        = ecs_view_write_t(itr, DevMenuComp);
+    UiCanvasComp*     canvas      = ecs_view_write_t(itr, UiCanvasComp);
+
+    ui_canvas_reset(canvas);
+    if (dev_panel_hidden(ecs_view_read_t(itr, DevPanelComp))) {
+      continue;
+    }
+    if (!ecs_view_maybe_jump(windowItr, menu->window)) {
+      continue;
+    }
+    const GapWindowComp* win = ecs_view_read_t(windowItr, GapWindowComp);
+
+    menu_action_bar_draw(world, panelEntity, canvas, input, menu, statsGlobal, menu->window, win);
+
+    if (input_triggered(input, DevHash_DevPanelClose)) {
+      const EcsEntityId topmostChild = menu_child_topmost(world, menu);
+      if (topmostChild) {
+        ui_canvas_sound(canvas, UiSoundType_ClickAlt);
+        ecs_world_entity_destroy(world, topmostChild);
+      }
+    }
+  }
+}
+
+ecs_system_define(DevMenuLifetimeSys) {
+  EcsView* ownerView = ecs_world_view_t(world, OwnerView);
+  for (EcsIterator* itr = ecs_view_itr(ownerView); ecs_view_walk(itr);) {
+    const DevMenuOwnerComp* ownerComp = ecs_view_read_t(itr, DevMenuOwnerComp);
+    if (!ecs_world_exists(world, ownerComp->owner)) {
+      ecs_world_entity_destroy(world, ecs_view_entity(itr));
+    }
+  }
+}
+
+ecs_module_init(dev_menu_module) {
+  ecs_register_comp(DevMenuComp);
+  ecs_register_comp(DevMenuOwnerComp);
+
+  ecs_register_view(GlobalView);
+  ecs_register_view(PanelUpdateView);
+  ecs_register_view(OwnerView);
+  ecs_register_view(CanvasView);
+  ecs_register_view(WindowView);
+
+  ecs_register_system(
+      DevMenuUpdateSys,
+      ecs_view_id(GlobalView),
+      ecs_view_id(PanelUpdateView),
+      ecs_view_id(CanvasView),
+      ecs_view_id(WindowView));
+
+  ecs_register_system(DevMenuLifetimeSys, ecs_view_id(OwnerView));
+}
+
+EcsEntityId dev_menu_create(EcsWorld* world, const EcsEntityId window, const bool hidden) {
+  EcsEntityId menuEntity;
+  if (hidden) {
+    menuEntity = dev_panel_create_hidden(world, window, DevPanelType_Normal);
+  } else {
+    menuEntity = dev_panel_create(world, window, DevPanelType_Normal);
+  }
+  ecs_world_add_t(world, menuEntity, DevMenuComp, .window = window, .menuEntity = menuEntity);
+  return menuEntity;
+}

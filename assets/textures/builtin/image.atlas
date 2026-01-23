@@ -1,0 +1,10 @@
+{
+  "size": 512,
+  "entrySize": 128,
+  "entryPadding": 0,
+  "mipmaps": false,
+  "srgb": true,
+  "entries": [
+    { "name": "dummy", "texture": "textures/builtin/white.proctex" }
+  ]
+}

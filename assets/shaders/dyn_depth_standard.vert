@@ -1,0 +1,27 @@
+#include "binding.glsl"
+#include "global.glsl"
+#include "standard.glsl"
+#include "quat.glsl"
+#include "vertex.glsl"
+
+bind_global_data(0) readonly uniform Global { GlobalData u_global; };
+bind_draw_data(1) readonly buffer Mesh { VertexPacked[] u_vertices; };
+bind_instance_data(0) readonly uniform Instance { StandardData[c_objMaxInstances] u_instances; };
+
+bind_internal(0) out f32v2 out_texcoord;
+bind_internal(1) out flat f32v4 out_data;
+
+void main() {
+  const Vertex vert = vert_unpack(u_vertices[in_vertexIndex]);
+
+  const f32v3 instancePos   = u_instances[in_instanceIndex].posAndScale.xyz;
+  const f32   instanceScale = u_instances[in_instanceIndex].posAndScale.w;
+  const f32v4 instanceQuat  = u_instances[in_instanceIndex].rot;
+  const f32v4 instanceData  = u_instances[in_instanceIndex].data;
+
+  const f32v3 worldPos = quat_rotate(instanceQuat, vert.position * instanceScale) + instancePos;
+
+  out_vertexPosition = u_global.viewProj * f32v4(worldPos, 1);
+  out_texcoord       = vert.texcoord;
+  out_data           = instanceData;
+}

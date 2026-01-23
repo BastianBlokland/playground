@@ -1,0 +1,31 @@
+/**
+ * Generic texture import rules applicable to all textures.
+ */
+
+if (asset_id_match("*_normal*")) {
+  fail_if(texture_channels() < 3, "Normal maps require 3 channels")
+  fail_if(texture_type() != "u8", "Normal maps should use 8 bit pixels")
+  texture_flag("Linear", true)
+}
+if (asset_id_match("*_metal*")) {
+  texture_channels(1) // Only a single channel is used for metallic maps.
+  texture_flag("Linear", true)
+}
+if (asset_id_match("*_rough*")) {
+  texture_channels(1) // Only a single channel is used for roughness maps.
+  texture_flag("Linear", true)
+}
+if (asset_id_match("*_lossless*")) {
+  texture_flag("Lossless", true)
+}
+if (asset_id_match("*_linear*")) {
+  texture_flag("Linear", true)
+}
+if (asset_id_match("*_emissive*") && texture_channels() == 1) {
+  texture_flag("BroadcastR", true) // Broadcast the R component to RGBA.
+}
+
+var warnSize = 2048
+if (texture_width() > warnSize || texture_height() > warnSize) {
+  warn("Unusually large texture")
+}

@@ -1,0 +1,9 @@
+/**
+ * Interface texture import rules.
+ */
+
+if (asset_id_match("icons/*")) {
+  // Icons are combined in an atlas; no compression needed on the source assets.
+  texture_flag("Mips", false)
+  texture_flag("Lossless", true)
+}

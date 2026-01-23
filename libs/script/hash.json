@@ -1,0 +1,23 @@
+{
+  "outputPath": "include/script/hash.h",
+  "prefix": "Script",
+  "entries": [
+    "",
+    "any",
+    "bool",
+    "break",
+    "continue",
+    "else",
+    "for",
+    "id",
+    "if",
+    "null",
+    "num",
+    "range",
+    "return",
+    "str",
+    "to",
+    "var",
+    "while"
+  ]
+}

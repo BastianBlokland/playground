@@ -1,0 +1,32 @@
+# --------------------------------------------------------------------------------------------------
+# ClangFormat style configuration.
+# Helpful configurator for testing:
+# https://zed0.co.uk/clang-format-configurator/
+# --------------------------------------------------------------------------------------------------
+
+BasedOnStyle: LLVM
+IndentWidth: 2
+ColumnLimit: 100
+
+Language: Cpp
+AlignConsecutiveDeclarations: true
+AlignAfterOpenBracket: AlwaysBreak
+AlignConsecutiveAssignments: true
+AlignEscapedNewlines: Right
+AlignOperands: true
+AlignTrailingComments: true
+AllowAllArgumentsOnNextLine: true
+AllowAllParametersOfDeclarationOnNextLine: true
+BinPackArguments: false
+BinPackParameters: false
+SortIncludes: true
+IncludeBlocks: Regroup
+IncludeIsMainRegex: "not-used"
+IncludeCategories:
+  - Regex: '^".+/.+.h"$'
+    SortPriority: 1
+  - Regex: '^".+"$'
+    SortPriority: 2
+  - Regex: '^<.+>$'
+    SortPriority: 3
+PointerAlignment: Left

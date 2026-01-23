@@ -1,0 +1,54 @@
+#pragma once
+#include "script/pos.h"
+#include "script/val.h"
+
+typedef enum eScriptPanicKind {
+  ScriptPanic_None,
+  ScriptPanic_AssertionFailed,
+  ScriptPanic_ExecutionFailed,
+  ScriptPanic_ExecutionLimitExceeded,
+  ScriptPanic_ArgumentInvalid,
+  ScriptPanic_ArgumentTypeMismatch,
+  ScriptPanic_ArgumentIdTypeMismatch,
+  ScriptPanic_ArgumentIdExpired,
+  ScriptPanic_ArgumentMissing,
+  ScriptPanic_ArgumentOutOfRange,
+  ScriptPanic_ArgumentCountExceedsMaximum,
+  ScriptPanic_EnumInvalidEntry,
+  ScriptPanic_UnimplementedBinding,
+  ScriptPanic_EventAlreadyFinished,
+  ScriptPanic_EventInvalidParent,
+  ScriptPanic_AttributeUnitNotFound,
+  ScriptPanic_AttributePowerNotFound,
+  ScriptPanic_AttributePropulsionNotFound,
+  ScriptPanic_AttributeNotFound,
+  ScriptPanic_ArrayLimitReached,
+  ScriptPanic_ArrayIndexOutOfRange,
+  ScriptPanic_ArrayElementTypeMismatch,
+  ScriptPanic_ArrayElementIdTypeMismatch,
+  ScriptPanic_IteratorLimitReached,
+  ScriptPanic_IteratorFilterLimitReached,
+
+  ScriptPanicKind_Count,
+} ScriptPanicKind;
+
+typedef struct sScriptPanic {
+  ScriptPanicKind    kind : 16;
+  u16                argIndex;
+  ScriptMask         typeMask;
+  ScriptType         typeActual : 16;
+  u32                contextInt;
+  ScriptRangeLineCol range;
+} ScriptPanic;
+
+typedef enum {
+  ScriptPanicOutput_Default      = 0,
+  ScriptPanicOutput_IncludeRange = 1 << 0,
+} ScriptPanicOutputFlags;
+
+typedef struct sScriptPanicHandler ScriptPanicHandler;
+
+NORETURN void script_panic_raise(ScriptPanicHandler*, ScriptPanic);
+
+void   script_panic_write(DynString*, const ScriptPanic*, ScriptPanicOutputFlags);
+String script_panic_scratch(const ScriptPanic*, ScriptPanicOutputFlags);

@@ -1,0 +1,28 @@
+# --------------------------------------------------------------------------------------------------
+# Special file attributes for git.
+# --------------------------------------------------------------------------------------------------
+
+# Use unix line-ending for all text files.
+* text eol=lf
+
+# Binary files.
+*.ico binary
+*.jpg binary
+*.png binary
+*.tga binary
+*.ttf binary
+*.wav binary
+
+# Override linguist language detection for custom extensions.
+*.vert linguist-language=GLSL
+*.frag linguist-language=GLSL
+*.arraytex linguist-language=JSON
+*.atlas linguist-language=JSON
+*.fonttex linguist-language=JSON
+*.graphic linguist-language=JSON
+*.icon linguist-language=JSON
+*.inputs linguist-language=JSON
+*.locale linguist-language=JSON
+*.prefs linguist-language=JSON
+*.procmesh linguist-language=JSON
+*.proctex linguist-language=JSON

@@ -1,0 +1,345 @@
+#include "core/diag.h"
+#include "core/forward.h"
+#include "script/binder.h"
+#include "script/eval.h"
+#include "script/intrinsic.h"
+#include "script/mem.h"
+#include "script/val.h"
+
+#include "doc.h"
+#include "panic.h"
+#include "val.h"
+
+#define script_executed_ops_max 25000
+
+typedef enum {
+  ScriptEvalSignal_None     = 0,
+  ScriptEvalSignal_Continue = 1 << 0,
+  ScriptEvalSignal_Break    = 1 << 1,
+  ScriptEvalSignal_Return   = 1 << 2,
+} ScriptEvalSignal;
+
+typedef struct {
+  const ScriptDoc*    doc;
+  const ScriptLookup* lookup;
+  ScriptMem*          m;
+  const ScriptBinder* binder;
+  void*               bindCtx;
+  ScriptEvalSignal    signal;
+  ScriptExpr          panicHandlerExpr;
+  ScriptPanicHandler  panicHandler;
+  u32                 executedOps;
+  ScriptVal           vars[script_var_count];
+} ScriptEvalContext;
+
+static ScriptVal eval_expr(ScriptEvalContext*, ScriptExpr);
+
+static ScriptRangeLineCol eval_source_range(ScriptEvalContext* ctx, const ScriptExpr e) {
+  if (!ctx->lookup) {
+    return (ScriptRangeLineCol){0}; // No source information known.
+  }
+  return script_lookup_range_to_line_col(ctx->lookup, script_expr_range(ctx->doc, e));
+}
+
+INLINE_HINT static ScriptVal eval_value(ScriptEvalContext* ctx, const ScriptExpr e) {
+  const ScriptExprValue* data = &expr_data(ctx->doc, e)->value;
+  return dynarray_begin_t(&ctx->doc->values, ScriptVal)[data->valId];
+}
+
+INLINE_HINT static ScriptVal eval_var_load(ScriptEvalContext* ctx, const ScriptExpr e) {
+  const ScriptExprVarLoad* data = &expr_data(ctx->doc, e)->var_load;
+  return ctx->vars[data->var];
+}
+
+INLINE_HINT static ScriptVal eval_var_store(ScriptEvalContext* ctx, const ScriptExpr e) {
+  const ScriptExprVarStore* data = &expr_data(ctx->doc, e)->var_store;
+  const ScriptVal           val  = eval_expr(ctx, data->val);
+  if (LIKELY(!ctx->signal)) {
+    ctx->vars[data->var] = val;
+  }
+  return val;
+}
+
+INLINE_HINT static ScriptVal eval_mem_load(ScriptEvalContext* ctx, const ScriptExpr e) {
+  const ScriptExprMemLoad* data = &expr_data(ctx->doc, e)->mem_load;
+  return script_mem_load(ctx->m, data->key);
+}
+
+INLINE_HINT static ScriptVal eval_mem_store(ScriptEvalContext* ctx, const ScriptExpr e) {
+  const ScriptExprMemStore* data = &expr_data(ctx->doc, e)->mem_store;
+  const ScriptVal           val  = eval_expr(ctx, data->val);
+  if (LIKELY(!ctx->signal)) {
+    script_mem_store(ctx->m, data->key, val);
+  }
+  return val;
+}
+
+INLINE_HINT static ScriptVal eval_intr(ScriptEvalContext* ctx, const ScriptExpr e) {
+  const ScriptExprIntrinsic* data = &expr_data(ctx->doc, e)->intrinsic;
+  const ScriptExpr*          args = expr_set_data(ctx->doc, data->argSet);
+
+#define EVAL_ARG_WITH_INTERRUPT(_NUM_)                                                             \
+  const ScriptVal arg##_NUM_ = eval_expr(ctx, args[_NUM_]);                                        \
+  if (UNLIKELY(ctx->signal)) {                                                                     \
+    return arg##_NUM_;                                                                             \
+  }
+
+  switch (data->intrinsic) {
+  case ScriptIntrinsic_Continue:
+    ctx->signal |= ScriptEvalSignal_Continue;
+    return val_null();
+  case ScriptIntrinsic_Break:
+    ctx->signal |= ScriptEvalSignal_Break;
+    return val_null();
+  case ScriptIntrinsic_Return: {
+    const ScriptVal ret = eval_expr(ctx, args[0]);
+    ctx->signal |= ScriptEvalSignal_Return;
+    return ret;
+  }
+  case ScriptIntrinsic_Type:
+    return script_val_type(eval_expr(ctx, args[0]));
+  case ScriptIntrinsic_Hash:
+    return script_val_hash(eval_expr(ctx, args[0]));
+  case ScriptIntrinsic_Assert: {
+    if (script_falsy(eval_expr(ctx, args[0]))) {
+      ctx->panicHandlerExpr = e; // Set to provide source-range info in the panic handler.
+      script_panic_raise(&ctx->panicHandler, (ScriptPanic){.kind = ScriptPanic_AssertionFailed});
+    }
+    return val_null();
+  }
+  case ScriptIntrinsic_MemLoadDynamic: {
+    EVAL_ARG_WITH_INTERRUPT(0);
+    return val_type(arg0) == ScriptType_Str ? script_mem_load(ctx->m, val_as_str(arg0))
+                                            : val_null();
+  }
+  case ScriptIntrinsic_MemStoreDynamic: {
+    EVAL_ARG_WITH_INTERRUPT(0);
+    EVAL_ARG_WITH_INTERRUPT(1);
+    if (val_type(arg0) == ScriptType_Str) {
+      script_mem_store(ctx->m, val_as_str(arg0), arg1);
+      return arg1;
+    }
+    return val_null();
+  }
+  case ScriptIntrinsic_Select: {
+    EVAL_ARG_WITH_INTERRUPT(0);
+    return script_truthy(arg0) ? eval_expr(ctx, args[1]) : eval_expr(ctx, args[2]);
+  }
+  case ScriptIntrinsic_NullCoalescing: {
+    EVAL_ARG_WITH_INTERRUPT(0);
+    return script_non_null(arg0) ? arg0 : eval_expr(ctx, args[1]);
+  }
+  case ScriptIntrinsic_LogicAnd: {
+    EVAL_ARG_WITH_INTERRUPT(0);
+    return val_bool(script_truthy(arg0) && script_truthy(eval_expr(ctx, args[1])));
+  }
+  case ScriptIntrinsic_LogicOr: {
+    EVAL_ARG_WITH_INTERRUPT(0);
+    return val_bool(script_truthy(arg0) || script_truthy(eval_expr(ctx, args[1])));
+  }
+  case ScriptIntrinsic_Loop: {
+    EVAL_ARG_WITH_INTERRUPT(0); // Setup.
+    ScriptVal ret = val_null();
+    for (;;) {
+      EVAL_ARG_WITH_INTERRUPT(1); // Condition.
+      if (script_falsy(arg1) || UNLIKELY(ctx->signal)) {
+        break;
+      }
+      ret = eval_expr(ctx, args[3]); // Body.
+      if (ctx->signal & ScriptEvalSignal_Continue) {
+        ctx->signal &= ~ScriptEvalSignal_Continue;
+      }
+      if (ctx->signal) {
+        ctx->signal &= ~ScriptEvalSignal_Break;
+        break;
+      }
+      EVAL_ARG_WITH_INTERRUPT(2); // Increment.
+    }
+    return ret;
+  }
+  case ScriptIntrinsic_Equal: {
+    EVAL_ARG_WITH_INTERRUPT(0);
+    return val_bool(script_val_equal(arg0, eval_expr(ctx, args[1])));
+  }
+  case ScriptIntrinsic_NotEqual: {
+    EVAL_ARG_WITH_INTERRUPT(0);
+    return val_bool(!script_val_equal(arg0, eval_expr(ctx, args[1])));
+  }
+  case ScriptIntrinsic_Less: {
+    EVAL_ARG_WITH_INTERRUPT(0);
+    return val_bool(script_val_less(arg0, eval_expr(ctx, args[1])));
+  }
+  case ScriptIntrinsic_LessOrEqual: {
+    EVAL_ARG_WITH_INTERRUPT(0);
+    return val_bool(!script_val_greater(arg0, eval_expr(ctx, args[1])));
+  }
+  case ScriptIntrinsic_Greater: {
+    EVAL_ARG_WITH_INTERRUPT(0);
+    return val_bool(script_val_greater(arg0, eval_expr(ctx, args[1])));
+  }
+  case ScriptIntrinsic_GreaterOrEqual: {
+    EVAL_ARG_WITH_INTERRUPT(0);
+    return val_bool(!script_val_less(arg0, eval_expr(ctx, args[1])));
+  }
+  case ScriptIntrinsic_Add: {
+    EVAL_ARG_WITH_INTERRUPT(0);
+    return script_val_add(arg0, eval_expr(ctx, args[1]));
+  }
+  case ScriptIntrinsic_Sub: {
+    EVAL_ARG_WITH_INTERRUPT(0);
+    return script_val_sub(arg0, eval_expr(ctx, args[1]));
+  }
+  case ScriptIntrinsic_Mul: {
+    EVAL_ARG_WITH_INTERRUPT(0);
+    return script_val_mul(arg0, eval_expr(ctx, args[1]));
+  }
+  case ScriptIntrinsic_Div: {
+    EVAL_ARG_WITH_INTERRUPT(0);
+    return script_val_div(arg0, eval_expr(ctx, args[1]));
+  }
+  case ScriptIntrinsic_Mod: {
+    EVAL_ARG_WITH_INTERRUPT(0);
+    return script_val_mod(arg0, eval_expr(ctx, args[1]));
+  }
+  case ScriptIntrinsic_Negate:
+    return script_val_neg(eval_expr(ctx, args[0]));
+  case ScriptIntrinsic_Invert:
+    return script_val_inv(eval_expr(ctx, args[0]));
+  case ScriptIntrinsic_Absolute:
+    return script_val_abs(eval_expr(ctx, args[0]));
+  case ScriptIntrinsic_RangeMin:
+    return script_val_num_range_min(eval_expr(ctx, args[0]));
+  case ScriptIntrinsic_RangeMax:
+    return script_val_num_range_max(eval_expr(ctx, args[0]));
+  case ScriptIntrinsic_RangeFromTo: {
+    EVAL_ARG_WITH_INTERRUPT(0);
+    return script_val_num_range_from_to(arg0, eval_expr(ctx, args[1]));
+  }
+  case ScriptIntrinsic_Clamp: {
+    EVAL_ARG_WITH_INTERRUPT(0);
+    return script_val_clamp(arg0, eval_expr(ctx, args[1]));
+  }
+  case ScriptIntrinsic_Contains: {
+    EVAL_ARG_WITH_INTERRUPT(0);
+    return script_val_contains(arg0, eval_expr(ctx, args[1]));
+  }
+  case ScriptIntrinsic_Min: {
+    EVAL_ARG_WITH_INTERRUPT(0);
+    return script_val_min(arg0, eval_expr(ctx, args[1]));
+  }
+  case ScriptIntrinsic_Max: {
+    EVAL_ARG_WITH_INTERRUPT(0);
+    return script_val_max(arg0, eval_expr(ctx, args[1]));
+  }
+  case ScriptIntrinsic_Count:
+    break;
+  }
+
+#undef EVAL_ARG_WITH_INTERRUPT
+
+  diag_assert_fail("Invalid intrinsic");
+  UNREACHABLE
+}
+
+INLINE_HINT static ScriptVal eval_block(ScriptEvalContext* ctx, const ScriptExpr e) {
+  const ScriptExprBlock* data  = &expr_data(ctx->doc, e)->block;
+  const ScriptExpr*      exprs = expr_set_data(ctx->doc, data->exprSet);
+
+  // NOTE: Blocks need at least one expression.
+  ScriptVal ret;
+  for (u32 i = 0; i != data->exprCount; ++i) {
+    ret = eval_expr(ctx, exprs[i]);
+    if (UNLIKELY(ctx->signal)) {
+      break;
+    }
+  }
+  return ret;
+}
+
+INLINE_HINT static ScriptVal eval_extern(ScriptEvalContext* ctx, const ScriptExpr e) {
+  const ScriptExprExtern* data      = &expr_data(ctx->doc, e)->extern_;
+  const ScriptExpr*       argExprs  = expr_set_data(ctx->doc, data->argSet);
+  ScriptVal*              argValues = mem_stack(sizeof(ScriptVal) * data->argCount).ptr;
+  for (u16 i = 0; i != data->argCount; ++i) {
+    argValues[i] = eval_expr(ctx, argExprs[i]);
+    if (UNLIKELY(ctx->signal)) {
+      return val_null();
+    }
+  }
+  ScriptBinderCall call = {
+      .args         = argValues,
+      .argCount     = data->argCount,
+      .callId       = e,
+      .panicHandler = &ctx->panicHandler,
+  };
+  ctx->panicHandlerExpr = e; // Set to provide source-range info in the panic handler.
+  return script_binder_exec(ctx->binder, data->func, ctx->bindCtx, &call);
+}
+
+NO_INLINE_HINT static ScriptVal eval_expr(ScriptEvalContext* ctx, const ScriptExpr e) {
+  if (UNLIKELY(ctx->executedOps++ == script_executed_ops_max)) {
+    ctx->panicHandlerExpr = e; // Set to provide source-range info in the panic handler.
+    script_panic_raise(
+        &ctx->panicHandler, (ScriptPanic){.kind = ScriptPanic_ExecutionLimitExceeded});
+  }
+  switch (expr_kind(ctx->doc, e)) {
+  case ScriptExprKind_Value:
+    return eval_value(ctx, e);
+  case ScriptExprKind_VarLoad:
+    return eval_var_load(ctx, e);
+  case ScriptExprKind_VarStore:
+    return eval_var_store(ctx, e);
+  case ScriptExprKind_MemLoad:
+    return eval_mem_load(ctx, e);
+  case ScriptExprKind_MemStore:
+    return eval_mem_store(ctx, e);
+  case ScriptExprKind_Intrinsic:
+    return eval_intr(ctx, e);
+  case ScriptExprKind_Block:
+    return eval_block(ctx, e);
+  case ScriptExprKind_Extern:
+    return eval_extern(ctx, e);
+  case ScriptExprKind_Count:
+    break;
+  }
+  diag_assert_fail("Unknown expression kind");
+  UNREACHABLE
+}
+
+ScriptEvalResult script_eval(
+    const ScriptDoc*    doc,
+    const ScriptLookup* lookup,
+    const ScriptExpr    expr,
+    ScriptMem*          m,
+    const ScriptBinder* binder,
+    void*               bindCtx) {
+
+  diag_assert(!binder || doc->binderHash == script_binder_hash(binder));
+
+  ScriptEvalContext ctx = {
+      .doc     = doc,
+      .lookup  = lookup,
+      .m       = m,
+      .binder  = binder,
+      .bindCtx = bindCtx,
+  };
+
+  if (UNLIKELY(setjmp(ctx.panicHandler.anchor))) {
+    ScriptEvalResult res;
+    res.val         = script_null();
+    res.panic       = ctx.panicHandler.result;
+    res.panic.range = eval_source_range(&ctx, ctx.panicHandlerExpr);
+    res.executedOps = ctx.executedOps;
+    return res;
+  }
+
+  ScriptEvalResult res;
+  res.val         = eval_expr(&ctx, expr);
+  res.panic       = (ScriptPanic){0};
+  res.executedOps = ctx.executedOps;
+
+  diag_assert(!(ctx.signal & ScriptEvalSignal_Break));
+  diag_assert(!(ctx.signal & ScriptEvalSignal_Continue));
+
+  return res;
+}

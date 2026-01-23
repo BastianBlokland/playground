@@ -1,0 +1,12 @@
+{
+  "pass": "Forward",
+  "passOrder": 1200,
+  "shaders": [
+    { "program": "shaders/fullscreen.vert" },
+    { "program": "shaders/outline.frag" }
+  ],
+  "vertexCount": 3,
+  "blend": "Additive",
+  "depth": "AlwaysNoWrite",
+  "cull": "None"
+}

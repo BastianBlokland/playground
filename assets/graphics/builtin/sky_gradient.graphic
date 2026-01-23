@@ -1,0 +1,11 @@
+{
+  "pass": "Forward",
+  "passOrder": -1,
+  "shaders": [
+    { "program": "shaders/sky/sky.vert" },
+    { "program": "shaders/sky/sky_gradient.frag" }
+  ],
+  "vertexCount": 3,
+  "depth": "EqualNoWrite",
+  "cull": "None"
+}

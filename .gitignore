@@ -1,0 +1,29 @@
+# --------------------------------------------------------------------------------------------------
+# Files to ignore in git.
+# --------------------------------------------------------------------------------------------------
+
+# Build paths.
+/build/
+/deps/
+
+# Output paths.
+/bin/
+/package/
+
+# User settings (Except portable common settings).
+/.vscode/*
+!/.vscode/settings.json
+!/.vscode/extensions.json
+/.zed/*
+!/.zed/settings.json
+
+# Temporary files.
+/.cache/
+/assets/.cache/
+/assets/external/
+
+# Dev environment.
+/.direnv/
+
+# Llvm pgo data.
+**/*.profraw

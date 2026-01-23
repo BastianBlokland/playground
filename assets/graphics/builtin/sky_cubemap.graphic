@@ -1,0 +1,14 @@
+{
+  "pass": "Forward",
+  "passOrder": -1,
+  "shaders": [
+    { "program": "shaders/sky/sky.vert" },
+    { "program": "shaders/sky/sky_cubemap.frag" }
+  ],
+  "samplers": [
+    { "texture": "textures/game/skybox.arraytex" }
+  ],
+  "vertexCount": 3,
+  "depth": "EqualNoWrite",
+  "cull": "None"
+}

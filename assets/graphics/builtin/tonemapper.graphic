@@ -1,0 +1,11 @@
+{
+  "pass": "Post",
+  "passOrder": -100,
+  "shaders": [
+    { "program": "shaders/fullscreen.vert" },
+    { "program": "shaders/tonemapper.frag" }
+  ],
+  "vertexCount": 3,
+  "depth": "AlwaysNoWrite",
+  "cull": "None"
+}

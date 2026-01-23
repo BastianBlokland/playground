@@ -1,0 +1,20 @@
+{
+  "outputPath": "include/dev/hash.h",
+  "prefix": "Dev",
+  "entries": [
+    "Dev",
+    "Debug",
+
+    "DevPanelClose",
+    "DevPanelEcs",
+    "DevPanelRenderer",
+    "DevPanelSound",
+    "DevPanelTime",
+    "DevPanelTrace",
+
+    "DevTimePauseToggle",
+    "DevTimeScaleDown",
+    "DevTimeScaleUp",
+    "DevTimeStep"
+  ]
+}

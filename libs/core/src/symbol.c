@@ -1,0 +1,375 @@
+#include "core/alloc.h"
+#include "core/array.h"
+#include "core/bits.h"
+#include "core/dynarray.h"
+#include "core/dynstring.h"
+#include "core/file.h"
+#include "core/format.h"
+#include "core/math.h"
+#include "core/search.h"
+#include "core/sentinel.h"
+#include "core/thread.h"
+
+#include "symbol.h"
+
+#if defined(VOLO_WIN32)
+#include <Windows.h>
+#endif
+
+#define symbol_reg_name_max 64
+#define symbol_reg_chunk_size (4 * usize_kibibyte)
+
+typedef struct {
+  SymbolAddrRel begin, end;
+  String        name;
+} SymbolInfo;
+
+struct sSymbolReg {
+  Allocator* allocAux;   // (chunked) bump allocator for axillary data (eg symbol names).
+  DynArray   syms;       // SymbolInfo[], kept sorted on begin address.
+  SymbolAddr addrOffset; // Base address in the executable.
+};
+
+static bool        g_symInit;
+static SymbolAddr  g_symProgBegin;
+static SymbolAddr  g_symProgEnd;
+static SymbolReg*  g_symReg;
+static ThreadMutex g_symRegMutex;
+
+static i8 sym_info_compare(const void* a, const void* b) {
+  return compare_u32(field_ptr(a, SymbolInfo, begin), field_ptr(b, SymbolInfo, begin));
+}
+
+INLINE_HINT static bool sym_addr_valid(const SymbolAddr symbol) {
+  if (!g_symInit) {
+    return false; // Program addresses not yet initalized; can happen when calling this during init.
+  }
+  // NOTE: Only includes the executable itself, not dynamic libraries.
+  return symbol >= g_symProgBegin && symbol < g_symProgEnd;
+}
+
+INLINE_HINT static SymbolAddrRel sym_addr_rel(const SymbolAddr symbol) {
+  if (!sym_addr_valid(symbol)) {
+    return (SymbolAddrRel)sentinel_u32;
+  }
+  return (SymbolAddrRel)(symbol - g_symProgBegin);
+}
+
+INLINE_HINT static SymbolAddr sym_addr_abs(const SymbolAddrRel addr) {
+  if (sentinel_check(addr)) {
+    return (SymbolAddr)sentinel_uptr;
+  }
+  return (SymbolAddr)addr + g_symProgBegin;
+}
+
+static bool sym_info_contains(const SymbolInfo* sym, const SymbolAddrRel addr) {
+  return addr >= sym->begin && addr < sym->end;
+}
+
+static SymbolReg* symbol_reg_create(void) {
+  /**
+   * We cannot use the heap allocator as the symbol registry is used in heap leak detection, instead
+   * use the page-allocator directly plus a chunked bump-allocator for small allocations.
+   */
+  Allocator* allocAux = alloc_chunked_create(g_allocPage, alloc_bump_create, symbol_reg_chunk_size);
+  SymbolReg* r        = alloc_alloc_t(allocAux, SymbolReg);
+
+  *r = (SymbolReg){
+      .allocAux = allocAux,
+      .syms     = dynarray_create_t(g_allocPage, SymbolInfo, 2048),
+  };
+
+  return r;
+}
+
+static void symbol_reg_destroy(SymbolReg* r) {
+  dynarray_destroy(&r->syms);
+  alloc_chunked_destroy(r->allocAux);
+}
+
+/**
+ * Find information for the symbol that contains the given address.
+ * NOTE: Retrieved pointer is valid until a new entry is added.
+ * NOTE: Retrieved symbol name is valid until teardown.
+ */
+static const SymbolInfo* symbol_reg_query(const SymbolReg* r, const SymbolAddrRel addr) {
+  if (!r->syms.size) {
+    return null; // No symbols known.
+  }
+  const SymbolInfo* begin = dynarray_begin_t(&r->syms, SymbolInfo);
+  const SymbolInfo* end   = dynarray_end_t(&r->syms, SymbolInfo);
+
+  const SymbolInfo  tgt = {.begin = addr};
+  const SymbolInfo* gtr = search_binary_greater_t(begin, end, SymbolInfo, sym_info_compare, &tgt);
+  if (gtr == begin) {
+    return null; // Address is before the lowest address symbol.
+  }
+  const SymbolInfo* gtOrEnd   = gtr ? gtr : end;
+  const SymbolInfo* candidate = gtOrEnd - 1;
+  return sym_info_contains(candidate, addr) ? candidate : null;
+}
+
+static const SymbolReg* symbol_reg_get(void) {
+  if (g_symReg) {
+    return g_symReg;
+  }
+  if (!g_symInit) {
+    return null;
+  }
+  static THREAD_LOCAL bool g_symRegInitializing;
+  if (g_symRegInitializing) {
+    /**
+     * Handle 'symbol_reg_get' being called while we are currently creating the registry, this can
+     * happen if we trigger an assert while building the registry for example.
+     */
+    return null;
+  }
+  g_symRegInitializing = true;
+  thread_mutex_lock(g_symRegMutex);
+  if (!g_symReg) {
+    SymbolReg* reg = symbol_reg_create();
+    symbol_pal_dbg_init(reg);
+    thread_atomic_fence();
+    g_symReg = reg;
+  }
+  thread_mutex_unlock(g_symRegMutex);
+  g_symRegInitializing = false;
+  return g_symReg;
+}
+
+void symbol_reg_set_offset(SymbolReg* r, const SymbolAddr addrOffset) {
+  r->addrOffset = addrOffset;
+}
+
+void symbol_reg_add(
+    SymbolReg* r, const SymbolAddrRel begin, const SymbolAddrRel end, const String name) {
+  const usize  nameSize   = math_min(name.size, symbol_reg_name_max);
+  const String nameStored = string_dup(r->allocAux, string_slice(name, 0, nameSize));
+
+  const SymbolInfo info = {.begin = begin, .end = end, .name = nameStored};
+  *dynarray_insert_sorted_t(&r->syms, SymbolInfo, sym_info_compare, &info) = info;
+}
+
+void symbol_init(void) {
+  g_symProgBegin = symbol_pal_prog_begin();
+  g_symProgEnd   = symbol_pal_prog_end();
+  g_symRegMutex  = thread_mutex_create(g_allocPersist);
+  g_symInit      = true;
+}
+
+void symbol_teardown(void) {
+  g_symInit = false;
+  if (g_symReg) {
+    symbol_reg_destroy(g_symReg);
+  }
+  thread_mutex_destroy(g_symRegMutex);
+}
+
+void symbol_dbg_preload(void) { symbol_reg_get(); }
+
+#if defined(VOLO_CLANG) || defined(VOLO_GCC)
+/**
+ * Check if the given pointer is located on the stack of the current thread. Avoids us following
+ * bogus pointers if the stack is corrupt or the executable was compiled without frame-pointers.
+ */
+INLINE_HINT MAYBE_UNUSED static bool sym_is_stack_ptr(const void* ptr) {
+  uptr stackBottom;
+  asm("movq %%rsp, %[stackBottom]" : [stackBottom] "=r"(stackBottom));
+
+  return (uptr)ptr <= g_threadStackTop && (uptr)ptr >= stackBottom;
+}
+#endif
+
+NO_INLINE_HINT FLATTEN_HINT NO_ASAN SymbolStack symbol_stack_walk(void) {
+  ASSERT(sizeof(uptr) == 8, "Only 64 bit architectures are supported at the moment");
+
+  SymbolStack stack;
+  u32         frameIndex = 0;
+
+#if defined(VOLO_WIN32)
+  /**
+   * Walk the stack using the x64 unwind tables.
+   * NOTE: Win32 x86_64 ABI rarely uses a frame-pointer unfortunately.
+   * Docs: https://learn.microsoft.com/en-us/cpp/build/exception-handling-x64
+   * Ref: http://www.nynaeve.net/Code/StackWalk64.cpp
+   */
+  CONTEXT                       unwindCtx;
+  KNONVOLATILE_CONTEXT_POINTERS unwindNvCtx;
+  PRUNTIME_FUNCTION             unwindFunc;
+  DWORD64                       unwindImageBase;
+  PVOID                         unwindHandlerData;
+  ULONG_PTR                     unwindEstablisherFrame;
+
+  RtlCaptureContext(&unwindCtx);
+
+  for (;;) {
+    unwindFunc = RtlLookupFunctionEntry(unwindCtx.Rip, &unwindImageBase, NULL);
+    RtlZeroMemory(&unwindNvCtx, sizeof(KNONVOLATILE_CONTEXT_POINTERS));
+    if (!unwindFunc) {
+      // Function has no unwind-data, must be a leaf-function; adjust the stack accordingly.
+      unwindCtx.Rip = (ULONG64)(*(PULONG64)unwindCtx.Rsp);
+      unwindCtx.Rsp += 8;
+    } else {
+      // Unwind to the caller function.
+      RtlVirtualUnwind(
+          UNW_FLAG_NHANDLER,
+          unwindImageBase,
+          unwindCtx.Rip,
+          unwindFunc,
+          &unwindCtx,
+          &unwindHandlerData,
+          &unwindEstablisherFrame,
+          &unwindNvCtx);
+    }
+    if (!unwindCtx.Rip) {
+      break; // Reached the end of the call-stack.
+    }
+    const SymbolAddrRel addrRel = sym_addr_rel(unwindCtx.Rip);
+    if (sentinel_check(addrRel)) {
+      continue; // Function does not belong to our executable.
+    }
+    stack.frames[frameIndex++] = addrRel;
+    if (frameIndex == array_elems(stack.frames)) {
+      break; // Reached the stack-frame limit.
+    }
+  }
+#else
+  /**
+   * Walk the stack using the frame-pointer stored in the RBP register on x86_64.
+   * NOTE: Only x86_64 is supported at the moment.
+   * NOTE: Requires the binary to be compiled with frame-pointers.
+   */
+  struct Frame {
+    const struct Frame* prev;
+    SymbolAddr          retAddr;
+  };
+  ASSERT(sizeof(struct Frame) == sizeof(uptr) * 2, "Unexpected Frame size");
+
+  // Retrieve the frame-pointer from the EBP register.
+  const struct Frame* fp;
+  asm volatile("movq %%rbp, %[fp]" : [fp] "=r"(fp)); // Volatile to avoid compiler reordering.
+
+  // Fill the stack by walking the linked-list of frames.
+  for (; sym_is_stack_ptr(fp) && bits_aligned_ptr(fp, sizeof(uptr)); fp = fp->prev) {
+    const SymbolAddrRel addrRel = sym_addr_rel(fp->retAddr);
+    if (sentinel_check(addrRel)) {
+      if (UNLIKELY(fp == fp->prev)) {
+        break; // Frame points to itself; malformed stack.
+      }
+      continue; // Function does not belong to our executable.
+    }
+    stack.frames[frameIndex++] = addrRel;
+    if (frameIndex == array_elems(stack.frames)) {
+      break; // Reached the stack-frame limit.
+    }
+  }
+#endif
+
+  // Set the remaining frames to a sentinel value.
+  for (; frameIndex != array_elems(stack.frames); ++frameIndex) {
+    stack.frames[frameIndex] = sentinel_u32;
+  }
+
+  return stack;
+}
+
+bool symbol_stack_valid(const SymbolStack* stack) { return !sentinel_check(stack->frames[0]); }
+
+bool symbol_stack_equal(const SymbolStack* a, const SymbolStack* b) {
+  return mem_eq(array_mem(a->frames), array_mem(b->frames));
+}
+
+void symbol_stack_write(const SymbolStack* stack, DynString* out) {
+  const SymbolReg* reg        = symbol_reg_get();
+  const SymbolAddr addrOffset = reg ? reg->addrOffset : 0;
+
+  if (sentinel_check(stack->frames[0])) {
+    fmt_write(out, "Stack: Invalid\n");
+    return;
+  }
+  fmt_write(out, "Stack:\n");
+  for (u32 frameIndex = 0; frameIndex != array_elems(stack->frames); ++frameIndex) {
+    const SymbolAddrRel addr = stack->frames[frameIndex];
+    if (sentinel_check(addr)) {
+      break; // End of stack.
+    }
+    const SymbolAddr  addrInExec = (SymbolAddr)addr + addrOffset;
+    const SymbolInfo* info       = reg ? symbol_reg_query(reg, addr) : null;
+    if (info) {
+      const u32 offset = addr - info->begin;
+      fmt_write(
+          out,
+          " {}) {} {} +{}\n",
+          fmt_int(frameIndex),
+          fmt_int(addrInExec, .base = 16, .minDigits = 8),
+          fmt_text(info->name),
+          fmt_int(offset));
+    } else {
+      const SymbolAddr addrAbs = symbol_addr_abs(addr);
+      fmt_write(
+          out,
+          " {}) {} {}\n",
+          fmt_int(frameIndex),
+          fmt_int(addrInExec, .base = 16, .minDigits = 8),
+          fmt_int(addrAbs, .base = 16, .minDigits = 16));
+    }
+  }
+}
+
+String symbol_stack_write_scratch(const SymbolStack* stack) {
+  Mem       scratchMem = alloc_alloc(g_allocScratch, 4 * usize_kibibyte, 1);
+  DynString str        = dynstring_create_over(scratchMem);
+
+  symbol_stack_write(stack, &str);
+
+  String res = dynstring_view(&str);
+  dynstring_destroy(&str);
+  return res;
+}
+
+SymbolAddrRel symbol_addr_rel(const SymbolAddr addr) { return sym_addr_rel(addr); }
+SymbolAddrRel symbol_addr_rel_ptr(const Symbol symbol) { return sym_addr_rel((SymbolAddr)symbol); }
+SymbolAddr    symbol_addr_abs(const SymbolAddrRel addr) { return sym_addr_abs(addr); }
+
+SymbolAddr symbol_dbg_offset(void) {
+  const SymbolReg* reg = symbol_reg_get();
+  return reg ? reg->addrOffset : 0;
+}
+
+String symbol_dbg_name(const SymbolAddrRel addr) {
+  const SymbolReg* reg = symbol_reg_get();
+  if (UNLIKELY(!reg || sentinel_check(addr))) {
+    return string_empty;
+  }
+  const SymbolInfo* info = symbol_reg_query(reg, addr);
+  return info ? info->name : string_empty;
+}
+
+SymbolAddrRel symbol_dbg_base(const SymbolAddrRel addr) {
+  const SymbolReg* reg = symbol_reg_get();
+  if (UNLIKELY(!reg || sentinel_check(addr))) {
+    return sentinel_u32;
+  }
+  const SymbolInfo* info = symbol_reg_query(reg, addr);
+  return info ? info->begin : sentinel_u32;
+}
+
+bool symbol_dbg_dump(File* out) {
+  const SymbolReg* reg = symbol_reg_get();
+  if (!reg || !reg->syms.size) {
+    return false;
+  }
+  DynString str = dynstring_create(g_allocHeap, 4 * usize_kibibyte);
+  dynarray_for_t(&reg->syms, SymbolInfo, info) {
+    const SymbolAddrRel size = info->end - info->begin;
+    fmt_write(
+        &str,
+        "{} +{} {}\n",
+        fmt_int(info->begin, .base = 16, .minDigits = 8),
+        fmt_int(size),
+        fmt_text(info->name));
+  }
+  file_write_sync(out, dynstring_view(&str));
+  dynstring_destroy(&str);
+  return true;
+}

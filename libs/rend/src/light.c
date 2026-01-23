@@ -1,0 +1,697 @@
+#include "asset/manager.h"
+#include "core/alloc.h"
+#include "core/array.h"
+#include "core/bits.h"
+#include "core/diag.h"
+#include "core/dynarray.h"
+#include "core/float.h"
+#include "core/math.h"
+#include "ecs/view.h"
+#include "ecs/world.h"
+#include "gap/window.h"
+#include "geo/box_rotated.h"
+#include "geo/color.h"
+#include "geo/matrix.h"
+#include "log/logger.h"
+#include "rend/camera.h"
+#include "rend/light.h"
+#include "rend/object.h"
+#include "rend/register.h"
+#include "rend/settings.h"
+#include "rend/tag.h"
+
+#include "light.h"
+
+static const GeoColor g_lightMinAmbient        = {0.01f, 0.01f, 0.01f}; // NOTE: Avoid total black.
+static const f32      g_lightDirMaxShadowDist  = 250.0f;
+static const f32      g_lightDirShadowStepSize = 2.0f;
+
+typedef enum {
+  RendLightType_Directional,
+  RendLightType_Point,
+  RendLightType_Spot,
+  RendLightType_Line,
+  RendLightType_Ambient,
+
+  RendLightType_Count,
+} RendLightType;
+
+typedef enum {
+  RendLightVariation_Normal,
+  RendLightVariation_Debug,
+
+  RendLightVariation_Count,
+} RendLightVariation;
+
+enum { RendLightObj_Count = RendLightType_Count * RendLightVariation_Count };
+
+typedef struct {
+  GeoQuat        rotation;
+  GeoColor       radiance;
+  RendLightFlags flags;
+} RendLightDirectional;
+
+typedef struct {
+  GeoVector      pos;
+  GeoColor       radiance;
+  f32            radius;
+  RendLightFlags flags;
+} RendLightPoint;
+
+typedef struct {
+  GeoVector      posA, posB;
+  GeoColor       radiance;
+  f32            angle;
+  RendLightFlags flags;
+} RendLightSpot;
+
+typedef struct {
+  GeoVector      posA, posB;
+  GeoColor       radiance;
+  f32            radius;
+  RendLightFlags flags;
+} RendLightLine;
+
+typedef struct {
+  GeoColor radiance;
+} RendLightAmbient;
+
+typedef struct {
+  RendLightType type;
+  union {
+    RendLightDirectional data_directional;
+    RendLightPoint       data_point;
+    RendLightSpot        data_spot;
+    RendLightLine        data_line;
+    RendLightAmbient     data_ambient;
+  };
+} RendLight;
+
+#define LIGHT_OBJ_INDEX(_TYPE_, _VAR_)                                                             \
+  (RendLightType_##_TYPE_ * RendLightVariation_Count + RendLightVariation_##_VAR_)
+
+// clang-format off
+static const String g_lightGraphics[RendLightObj_Count] = {
+  [LIGHT_OBJ_INDEX(Directional, Normal)] = string_static("graphics/builtin/light/light_directional.graphic"),
+  [LIGHT_OBJ_INDEX(Point,       Normal)] = string_static("graphics/builtin/light/light_point.graphic"),
+  [LIGHT_OBJ_INDEX(Point,       Debug)]  = string_static("graphics/builtin/light/light_point_debug.graphic"),
+  [LIGHT_OBJ_INDEX(Spot,        Normal)] = string_static("graphics/builtin/light/light_spot.graphic"),
+  [LIGHT_OBJ_INDEX(Spot,        Debug)]  = string_static("graphics/builtin/light/light_spot_debug.graphic"),
+  [LIGHT_OBJ_INDEX(Line,        Normal)] = string_static("graphics/builtin/light/light_line.graphic"),
+  [LIGHT_OBJ_INDEX(Line,        Debug)]  = string_static("graphics/builtin/light/light_line_debug.graphic"),
+};
+// clang-format on
+
+#undef LIGHT_OBJ_INDEX
+
+ecs_comp_define(RendLightRendererComp) {
+  EcsEntityId objEntities[RendLightObj_Count];
+  GeoColor    ambientRadiance;
+  bool        hasShadow;
+  GeoMatrix   shadowTransMatrix, shadowProjMatrix;
+};
+
+typedef struct {
+  DynArray entries; // RendLightDebug[]
+} RendLightDebugStorage;
+
+ecs_comp_define(RendLightComp) {
+  DynArray              entries; // RendLight[]
+  RendLightDebugStorage debug;
+};
+
+static void ecs_destruct_light(void* data) {
+  RendLightComp* comp = data;
+  dynarray_destroy(&comp->entries);
+  dynarray_destroy(&comp->debug.entries);
+}
+
+ecs_view_define(GlobalInitView) {
+  ecs_access_without(RendLightRendererComp);
+  ecs_access_write(AssetManagerComp);
+}
+
+ecs_view_define(GlobalView) {
+  ecs_access_read(RendSettingsGlobalComp);
+  ecs_access_write(RendLightComp);
+  ecs_access_write(RendLightRendererComp);
+}
+
+ecs_view_define(LightView) { ecs_access_write(RendLightComp); }
+
+ecs_view_define(ObjView) {
+  ecs_view_flags(EcsViewFlags_Exclusive); // Only access the render objects we create.
+  ecs_access_write(RendObjectComp);
+}
+
+ecs_view_define(CameraView) {
+  ecs_access_read(GapWindowAspectComp);
+  ecs_access_read(RendCameraComp);
+}
+
+static u32 rend_obj_index(const RendLightType type, const RendLightVariation variation) {
+  return (u32)type * RendLightVariation_Count + (u32)variation;
+}
+
+static EcsEntityId rend_light_obj_create(
+    EcsWorld*                world,
+    AssetManagerComp*        assets,
+    const RendLightType      type,
+    const RendLightVariation var) {
+  const u32 objIndex = rend_obj_index(type, var);
+  if (string_is_empty(g_lightGraphics[objIndex])) {
+    return 0;
+  }
+
+  const EcsEntityId entity        = ecs_world_entity_create(world);
+  RendObjectComp*   obj           = rend_object_create(world, entity, RendObjectFlags_None);
+  const EcsEntityId graphicEntity = asset_lookup(world, assets, g_lightGraphics[objIndex]);
+  rend_object_set_resource(obj, RendObjectRes_Graphic, graphicEntity);
+  return entity;
+}
+
+static void rend_light_renderer_create(EcsWorld* world, AssetManagerComp* assets) {
+  const EcsEntityId      global   = ecs_world_global(world);
+  RendLightRendererComp* renderer = ecs_world_add_t(world, global, RendLightRendererComp);
+
+  for (RendLightType type = 0; type != RendLightType_Count; ++type) {
+    for (RendLightVariation var = 0; var != RendLightVariation_Count; ++var) {
+      const u32 objIndex              = rend_obj_index(type, var);
+      renderer->objEntities[objIndex] = rend_light_obj_create(world, assets, type, var);
+    }
+  }
+}
+
+ecs_system_define(RendLightInitSys) {
+  EcsView*     globalInitView = ecs_world_view_t(world, GlobalInitView);
+  EcsIterator* globalInitItr  = ecs_view_maybe_at(globalInitView, ecs_world_global(world));
+  if (globalInitItr) {
+    AssetManagerComp* assets = ecs_view_write_t(globalInitItr, AssetManagerComp);
+
+    rend_light_renderer_create(world, assets);
+    rend_light_create(world, ecs_world_global(world)); // Global light component for convenience.
+  }
+}
+
+static void rend_light_debug_clear(RendLightDebugStorage* debug) {
+  dynarray_clear(&debug->entries);
+}
+
+static void rend_light_debug_push(
+    RendLightDebugStorage* debug, const RendLightDebugType type, const GeoVector frustum[8]) {
+  RendLightDebug* entry = dynarray_push_t(&debug->entries, RendLightDebug);
+  entry->type           = type;
+  mem_cpy(mem_var(entry->frustum), mem_create(frustum, sizeof(GeoVector) * 8));
+}
+
+INLINE_HINT static void rend_light_add(RendLightComp* comp, const RendLight light) {
+  *((RendLight*)dynarray_push(&comp->entries, 1).ptr) = light;
+}
+
+static GeoColor rend_radiance_resolve(const GeoColor radiance) {
+  return (GeoColor){
+      .r = radiance.r * radiance.a,
+      .g = radiance.g * radiance.a,
+      .b = radiance.b * radiance.a,
+      .a = 1.0f,
+  };
+}
+
+static f32 rend_light_brightness(const GeoColor radiance) {
+  return math_max(math_max(radiance.r, radiance.g), radiance.b);
+}
+
+static void rend_clip_frustum_far_dist(GeoVector frustum[PARAM_ARRAY_SIZE(8)], const f32 maxDist) {
+  for (u32 i = 0; i != 4; ++i) {
+    const u32       idxNear = i;
+    const u32       idxFar  = 4 + i;
+    const GeoVector toBack  = geo_vector_sub(frustum[idxFar], frustum[idxNear]);
+    const f32       sqrDist = geo_vector_mag_sqr(toBack);
+    if (sqrDist > (maxDist * maxDist)) {
+      const GeoVector toBackDir = geo_vector_div(toBack, math_sqrt_f32(sqrDist));
+      frustum[idxFar] = geo_vector_add(frustum[idxNear], geo_vector_mul(toBackDir, maxDist));
+    }
+  }
+}
+
+static void
+rend_clip_frustum_to_plane(GeoVector frustum[PARAM_ARRAY_SIZE(8)], const GeoPlane* clipPlane) {
+  for (u32 i = 0; i != 4; ++i) {
+    const u32       idxNear = i;
+    const u32       idxFar  = 4 + i;
+    const GeoVector delta   = geo_vector_sub(frustum[idxFar], frustum[idxNear]);
+    const f32       length  = geo_vector_mag(delta);
+
+    const GeoVector dirToBack    = geo_vector_div(delta, length);
+    const GeoRay    rayToBack    = {.dir = dirToBack, .point = frustum[idxNear]};
+    const f32       nearClipDist = geo_plane_intersect_ray(clipPlane, &rayToBack);
+    if (nearClipDist > 0 && nearClipDist < length) {
+      frustum[idxNear] = geo_ray_position(&rayToBack, nearClipDist);
+    }
+    const GeoVector dirToFront  = geo_vector_mul(dirToBack, -1.0f);
+    const GeoRay    rayToFront  = {.dir = dirToFront, .point = frustum[idxFar]};
+    const f32       farClipDist = geo_plane_intersect_ray(clipPlane, &rayToFront);
+    if (farClipDist > 0 && farClipDist < length) {
+      frustum[idxFar] = geo_ray_position(&rayToFront, farClipDist);
+    }
+  }
+}
+
+static void
+rend_clip_frustum_far_to_bounds(GeoVector frustum[PARAM_ARRAY_SIZE(8)], const GeoBox* clipBounds) {
+  rend_clip_frustum_to_plane(frustum, &(GeoPlane){geo_up, clipBounds->max.y});
+  rend_clip_frustum_to_plane(frustum, &(GeoPlane){geo_down, -clipBounds->min.y});
+  rend_clip_frustum_to_plane(frustum, &(GeoPlane){geo_right, clipBounds->max.x});
+  rend_clip_frustum_to_plane(frustum, &(GeoPlane){geo_left, -clipBounds->min.x});
+  rend_clip_frustum_to_plane(frustum, &(GeoPlane){geo_forward, clipBounds->max.z});
+  rend_clip_frustum_to_plane(frustum, &(GeoPlane){geo_backward, -clipBounds->min.z});
+}
+
+static GeoBox rend_light_shadow_discretize(GeoBox box, const f32 step) {
+  box.min = geo_vector_mul(geo_vector_round_nearest(geo_vector_div(box.min, step)), step);
+  box.max = geo_vector_mul(geo_vector_round_nearest(geo_vector_div(box.max, step)), step);
+  return geo_box_dilate(&box, geo_vector(step * 0.5f, step * 0.5f, step * 0.5f));
+}
+
+static GeoMatrix rend_light_compute_dir_shadow_proj(
+    const GapWindowAspectComp* winAspect,
+    const RendCameraComp*      cam,
+    const GeoQuat              lightRot,
+    RendLightDebugStorage*     debug) {
+  // Compute the world-space camera frustum corners.
+  GeoVector       frustum[8];
+  const GeoVector winCamMin = geo_vector(0, 0), winCamMax = geo_vector(1, 1);
+  rend_camera_frustum_corners(cam, winAspect->ratio, winCamMin, winCamMax, frustum);
+
+  // Clip the camera frustum to the region that actually contains content.
+  rend_clip_frustum_far_dist(frustum, g_lightDirMaxShadowDist);
+
+  // TODO: Make the world bounds configurable.
+  const GeoBox worldBounds = {.min = {-10, -2, -10}, .max = {100, 10, 100}};
+  rend_clip_frustum_far_to_bounds(frustum, &worldBounds);
+
+  if (debug) {
+    rend_light_debug_push(debug, RendLightDebug_ShadowFrustumTarget, frustum);
+  }
+
+  // Compute the bounding box in light-space.
+  const GeoQuat lightRotInv = geo_quat_inverse(lightRot);
+  GeoBox        bounds      = geo_box_inverted3();
+  for (u32 i = 0; i != array_elems(frustum); ++i) {
+    const GeoVector localCorner = geo_quat_rotate(lightRotInv, frustum[i]);
+    bounds                      = geo_box_encapsulate(&bounds, localCorner);
+  }
+
+  /**
+   * Discretize the bounds so the shadow projection stays the same for small movements, this reduces
+   * the visible shadow 'shimmering'.
+   */
+  bounds = rend_light_shadow_discretize(bounds, g_lightDirShadowStepSize);
+
+  if (debug) {
+    const GeoBoxRotated local = {.box = bounds, .rotation = geo_quat_ident};
+    const GeoBoxRotated world = geo_box_rotated_transform3(&local, geo_vector(0), lightRot, 1.0f);
+    GeoVector           shadowCorners[8];
+    geo_box_rotated_corners3(&world, shadowCorners);
+    rend_light_debug_push(debug, RendLightDebug_ShadowFrustum, shadowCorners);
+  }
+
+  return geo_matrix_proj_ortho_box(
+      bounds.min.x, bounds.max.x, bounds.min.y, bounds.max.y, bounds.min.z, bounds.max.z);
+}
+
+ecs_system_define(RendLightRenderSys) {
+  EcsView*     globalView = ecs_world_view_t(world, GlobalView);
+  EcsIterator* globalItr  = ecs_view_maybe_at(globalView, ecs_world_global(world));
+  if (!globalItr) {
+    return; // Global dependencies not yet available.
+  }
+
+  RendLightRendererComp*        renderer = ecs_view_write_t(globalItr, RendLightRendererComp);
+  const RendSettingsGlobalComp* settings = ecs_view_read_t(globalItr, RendSettingsGlobalComp);
+
+  const bool debugLight         = (settings->flags & RendGlobalFlags_DebugLight) != 0;
+  const bool debugLightFreeze   = (settings->flags & RendGlobalFlags_DebugLightFreeze) != 0;
+  const RendLightVariation var  = debugLight ? RendLightVariation_Debug : RendLightVariation_Normal;
+  const RendTags           tags = RendTags_Light;
+
+  renderer->hasShadow       = false;
+  renderer->ambientRadiance = geo_color_black;
+
+  // Clear debug output from the previous frame.
+  if (debugLight && !debugLightFreeze) {
+    for (EcsIterator* itr = ecs_view_itr(ecs_world_view_t(world, LightView)); ecs_view_walk(itr);) {
+      rend_light_debug_clear(&ecs_view_write_t(itr, RendLightComp)->debug);
+    }
+  }
+
+  EcsIterator* camItr = ecs_view_first(ecs_world_view_t(world, CameraView));
+  if (!camItr) {
+    return; // No Camera found.
+  }
+  /**
+   * TODO: Support multiple camera's (requires multiple objs for directional lights with shadows).
+   */
+  const GapWindowAspectComp* winAspect = ecs_view_read_t(camItr, GapWindowAspectComp);
+  const RendCameraComp*      cam       = ecs_view_read_t(camItr, RendCameraComp);
+
+  EcsView*     objView = ecs_world_view_t(world, ObjView);
+  EcsIterator* objItr  = ecs_view_itr(objView);
+
+  for (EcsIterator* itr = ecs_view_itr(ecs_world_view_t(world, LightView)); ecs_view_walk(itr);) {
+    RendLightComp*         light        = ecs_view_write_t(itr, RendLightComp);
+    RendLightDebugStorage* debugStorage = (debugLight && !debugLightFreeze) ? &light->debug : null;
+
+    dynarray_for_t(&light->entries, RendLight, entry) {
+      if (entry->type == RendLightType_Ambient) {
+        const GeoColor radiance   = rend_radiance_resolve(entry->data_ambient.radiance);
+        renderer->ambientRadiance = geo_color_add(renderer->ambientRadiance, radiance);
+        continue;
+      }
+      const u32       objIndex = rend_obj_index(entry->type, var);
+      RendObjectComp* obj      = null;
+      if (renderer->objEntities[objIndex]) {
+        ecs_view_jump(objItr, renderer->objEntities[objIndex]);
+        obj = ecs_view_write_t(objItr, RendObjectComp);
+      }
+      typedef struct {
+        ALIGNAS(16)
+        GeoVector direction;     // x, y, z: direction, w: unused.
+        GeoVector radianceFlags; // x, y, z: radiance, a: flags.
+        GeoVector shadowParams;  // x: filterSize, y, z, w: unused.
+        GeoMatrix shadowViewProj;
+      } LightDirData;
+      ASSERT(sizeof(LightDirData) == 112, "Size needs to match the size defined in glsl");
+
+      typedef struct {
+        ALIGNAS(16)
+        GeoVector posScale;             // x, y, z: position, w: scale.
+        GeoColor  radianceAndRadiusInv; // r, g, b: radiance, a: inverse radius (1.0 / radius).
+      } LightPointData;
+      ASSERT(sizeof(LightPointData) == 32, "Size needs to match the size defined in glsl");
+
+      typedef struct {
+        ALIGNAS(16)
+        GeoVector posAndLength;      // x, y, z: position, w: length.
+        GeoVector dirAndAngleCos;    // x, y, z: direction, w: cos(angle).
+        GeoColor  radianceAndRadius; // r, g, b: radiance, a: radius.
+      } LightSpotData;
+      ASSERT(sizeof(LightSpotData) == 48, "Size needs to match the size defined in glsl");
+
+      typedef struct {
+        ALIGNAS(16)
+        GeoVector posA, posB;           // x, y, z: position, w: unused.
+        GeoColor  radianceAndRadiusInv; // r, g, b: radiance, a: radius.
+      } LightLineData;
+      ASSERT(sizeof(LightLineData) == 48, "Size needs to match the size defined in glsl");
+
+      switch (entry->type) {
+      case RendLightType_Directional: {
+        const GeoColor radiance = rend_radiance_resolve(entry->data_directional.radiance);
+        if (rend_light_brightness(radiance) < 0.01f) {
+          continue;
+        }
+        bool shadow = (entry->data_directional.flags & RendLightFlags_Shadow) != 0;
+        if (shadow && renderer->hasShadow) {
+          log_e("Only a single directional shadow is supported");
+          shadow = false;
+        }
+        GeoMatrix shadowViewProj;
+        if (shadow) {
+          const GeoQuat   transRot = entry->data_directional.rotation;
+          const GeoMatrix transMat = geo_matrix_from_quat(transRot);
+          const GeoMatrix viewMat  = geo_matrix_inverse(&transMat);
+
+          renderer->hasShadow         = true;
+          renderer->shadowTransMatrix = transMat;
+          renderer->shadowProjMatrix =
+              rend_light_compute_dir_shadow_proj(winAspect, cam, transRot, debugStorage);
+
+          shadowViewProj = geo_matrix_mul(&renderer->shadowProjMatrix, &viewMat);
+        } else {
+          shadowViewProj = (GeoMatrix){0};
+        }
+        if (!obj) {
+          continue;
+        }
+        const GeoVector direction = geo_quat_rotate(entry->data_directional.rotation, geo_forward);
+        const GeoBox    bounds    = geo_box_inverted3(); // Cannot be culled.
+        *rend_object_add_instance_t(obj, LightDirData, tags, bounds) = (LightDirData){
+            .direction       = direction,
+            .radianceFlags.x = radiance.r,
+            .radianceFlags.y = radiance.g,
+            .radianceFlags.z = radiance.b,
+            .radianceFlags.w = bits_u32_as_f32(entry->data_directional.flags),
+            .shadowParams.x  = settings->shadowFilterSize,
+            .shadowViewProj  = shadowViewProj,
+        };
+        break;
+      }
+      case RendLightType_Point: {
+        if (entry->data_point.flags & RendLightFlags_Shadow) {
+          log_e("Point-light shadows are not supported");
+        }
+        const GeoVector pos      = entry->data_point.pos;
+        const GeoColor  radiance = rend_radiance_resolve(entry->data_point.radiance);
+        const f32       radius   = entry->data_point.radius;
+        if (UNLIKELY(rend_light_brightness(radiance) < 0.01f || radius < f32_epsilon)) {
+          continue;
+        }
+        const GeoBox bounds = geo_box_from_sphere(pos, radius);
+        *rend_object_add_instance_t(obj, LightPointData, tags, bounds) = (LightPointData){
+            .posScale.x             = pos.x,
+            .posScale.y             = pos.y,
+            .posScale.z             = pos.z,
+            .posScale.w             = radius,
+            .radianceAndRadiusInv.r = radiance.r,
+            .radianceAndRadiusInv.g = radiance.g,
+            .radianceAndRadiusInv.b = radiance.b,
+            .radianceAndRadiusInv.a = 1.0f / radius,
+        };
+        break;
+      }
+      case RendLightType_Spot: {
+        if (entry->data_spot.flags & RendLightFlags_Shadow) {
+          log_e("Spot-light shadows are not supported");
+        }
+        const GeoColor radiance = rend_radiance_resolve(entry->data_spot.radiance);
+        const f32      angle    = entry->data_spot.angle;
+        if (UNLIKELY(rend_light_brightness(radiance) < 0.01f || angle < f32_epsilon)) {
+          continue;
+        }
+        const GeoVector pos    = entry->data_spot.posA;
+        const GeoVector delta  = geo_vector_sub(entry->data_spot.posB, pos);
+        const f32       length = geo_vector_mag(delta);
+        if (UNLIKELY(length < f32_epsilon)) {
+          continue;
+        }
+        const GeoVector dir    = geo_vector_div(delta, length);
+        const f32       radius = length * math_tan_f32(angle);
+        const GeoBox    bounds = geo_box_from_cone(pos, entry->data_spot.posB, radius);
+        *rend_object_add_instance_t(obj, LightSpotData, tags, bounds) = (LightSpotData){
+            .posAndLength.x      = pos.x,
+            .posAndLength.y      = pos.y,
+            .posAndLength.z      = pos.z,
+            .posAndLength.w      = length,
+            .dirAndAngleCos.x    = dir.x,
+            .dirAndAngleCos.y    = dir.y,
+            .dirAndAngleCos.z    = dir.z,
+            .dirAndAngleCos.w    = math_cos_f32(angle),
+            .radianceAndRadius.r = radiance.r,
+            .radianceAndRadius.g = radiance.g,
+            .radianceAndRadius.b = radiance.b,
+            .radianceAndRadius.a = radius,
+        };
+        break;
+      }
+      case RendLightType_Line: {
+        if (entry->data_line.flags & RendLightFlags_Shadow) {
+          log_e("Line-light shadows are not supported");
+        }
+        const GeoVector posA     = entry->data_line.posA;
+        const GeoVector posB     = entry->data_line.posB;
+        const GeoColor  radiance = rend_radiance_resolve(entry->data_line.radiance);
+        const f32       radius   = entry->data_line.radius;
+        if (UNLIKELY(rend_light_brightness(radiance) < 0.01f || radius < f32_epsilon)) {
+          continue;
+        }
+        diag_assert(geo_vector_mag_sqr(geo_vector_sub(posB, posA)) > (0.01f * 0.01f));
+        const GeoBox bounds = geo_box_from_capsule(posA, posB, radius);
+        *rend_object_add_instance_t(obj, LightLineData, tags, bounds) = (LightLineData){
+            .posA                   = posA,
+            .posB                   = posB,
+            .radianceAndRadiusInv.r = radiance.r,
+            .radianceAndRadiusInv.g = radiance.g,
+            .radianceAndRadiusInv.b = radiance.b,
+            .radianceAndRadiusInv.a = radius,
+        };
+        break;
+      }
+      default:
+        diag_crash();
+      }
+    }
+    dynarray_clear(&light->entries);
+  }
+}
+
+ecs_module_init(rend_light_module) {
+  ecs_register_comp(RendLightRendererComp);
+  ecs_register_comp(RendLightComp, .destructor = ecs_destruct_light);
+
+  ecs_register_view(GlobalView);
+  ecs_register_view(GlobalInitView);
+  ecs_register_view(LightView);
+  ecs_register_view(ObjView);
+  ecs_register_view(CameraView);
+
+  ecs_register_system(RendLightInitSys, ecs_view_id(GlobalInitView));
+
+  ecs_register_system(
+      RendLightRenderSys,
+      ecs_view_id(GlobalView),
+      ecs_view_id(LightView),
+      ecs_view_id(ObjView),
+      ecs_view_id(CameraView));
+
+  // NOTE: +1 is added to allow the vfx system (which also adds lights) to run in parallel with
+  // instance object update without the created lights rendering a frame too late.
+  ecs_order(RendLightRenderSys, RendOrder_ObjectUpdate + 1);
+}
+
+RendLightComp* rend_light_create(EcsWorld* world, const EcsEntityId entity) {
+  return ecs_world_add_t(
+      world,
+      entity,
+      RendLightComp,
+      .entries = dynarray_create_t(g_allocHeap, RendLight, 4),
+      .debug   = dynarray_create_t(g_allocHeap, RendLightDebug, 0));
+}
+
+usize rend_light_debug_count(const RendLightComp* light) { return light->debug.entries.size; }
+
+const RendLightDebug* rend_light_debug_data(const RendLightComp* light) {
+  return dynarray_begin_t(&light->debug.entries, RendLightDebug);
+}
+
+void rend_light_directional(
+    RendLightComp*       comp,
+    const GeoQuat        rotation,
+    const GeoColor       radiance,
+    const RendLightFlags flags) {
+  rend_light_add(
+      comp,
+      (RendLight){
+          .type = RendLightType_Directional,
+          .data_directional =
+              {
+                  .rotation = rotation,
+                  .radiance = radiance,
+                  .flags    = flags,
+              },
+      });
+}
+
+void rend_light_point(
+    RendLightComp*       comp,
+    const GeoVector      pos,
+    const GeoColor       radiance,
+    const f32            radius,
+    const RendLightFlags flags) {
+  rend_light_add(
+      comp,
+      (RendLight){
+          .type = RendLightType_Point,
+          .data_point =
+              {
+                  .pos      = pos,
+                  .radiance = radiance,
+                  .radius   = radius,
+                  .flags    = flags,
+              },
+      });
+}
+
+void rend_light_spot(
+    RendLightComp*       comp,
+    const GeoVector      posA,
+    const GeoVector      posB,
+    const GeoColor       radiance,
+    const f32            angle,
+    const RendLightFlags flags) {
+  rend_light_add(
+      comp,
+      (RendLight){
+          .type = RendLightType_Spot,
+          .data_spot =
+              {
+                  .posA     = posA,
+                  .posB     = posB,
+                  .radiance = radiance,
+                  .angle    = angle,
+                  .flags    = flags,
+              },
+      });
+}
+
+void rend_light_line(
+    RendLightComp*       comp,
+    const GeoVector      posA,
+    const GeoVector      posB,
+    const GeoColor       radiance,
+    const f32            radius,
+    const RendLightFlags flags) {
+
+  const f32 lineLengthSqr = geo_vector_mag_sqr(geo_vector_sub(posB, posA));
+  if (lineLengthSqr <= (0.01f * 0.01f)) {
+    rend_light_add(
+        comp,
+        (RendLight){
+            .type = RendLightType_Point,
+            .data_point =
+                {
+                    .pos      = posA,
+                    .radiance = radiance,
+                    .radius   = radius,
+                    .flags    = flags,
+                },
+        });
+  } else {
+    rend_light_add(
+        comp,
+        (RendLight){
+            .type = RendLightType_Line,
+            .data_line =
+                {
+                    .posA     = posA,
+                    .posB     = posB,
+                    .radiance = radiance,
+                    .radius   = radius,
+                    .flags    = flags,
+                },
+        });
+  }
+}
+
+void rend_light_ambient(RendLightComp* comp, const GeoColor radiance) {
+  rend_light_add(
+      comp,
+      (RendLight){
+          .type         = RendLightType_Ambient,
+          .data_ambient = {.radiance = radiance},
+      });
+}
+
+GeoColor rend_light_ambient_radiance(const RendLightRendererComp* renderer) {
+  return geo_color_max(renderer->ambientRadiance, g_lightMinAmbient);
+}
+
+bool rend_light_has_shadow(const RendLightRendererComp* renderer) { return renderer->hasShadow; }
+
+const GeoMatrix* rend_light_shadow_trans(const RendLightRendererComp* renderer) {
+  return &renderer->shadowTransMatrix;
+}
+
+const GeoMatrix* rend_light_shadow_proj(const RendLightRendererComp* renderer) {
+  return &renderer->shadowProjMatrix;
+}
