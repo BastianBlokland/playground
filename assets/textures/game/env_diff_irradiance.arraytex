@@ -1,0 +1,15 @@
+{
+  "type": "CubeDiffIrradiance",
+  "channels": "Three",
+  "mipmaps": false,
+  "lossless": true,
+  "sizeX": 16, "sizeY": 16,
+  "textures": [
+    "textures/skybox/teide_small_right.png",
+    "textures/skybox/teide_small_left.png",
+    "textures/skybox/teide_small_down.png",
+    "textures/skybox/teide_small_up.png",
+    "textures/skybox/teide_small_forward.png",
+    "textures/skybox/teide_small_back.png"
+  ]
+}

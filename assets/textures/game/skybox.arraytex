@@ -1,0 +1,14 @@
+{
+  "type": "Cube",
+  "channels": "Three",
+  "mipmaps": false,
+  "srgb": true,
+  "textures": [
+    "textures/skybox/teide_small_right.png",
+    "textures/skybox/teide_small_left.png",
+    "textures/skybox/teide_small_down.png",
+    "textures/skybox/teide_small_up.png",
+    "textures/skybox/teide_small_forward.png",
+    "textures/skybox/teide_small_back.png"
+  ]
+}
