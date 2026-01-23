@@ -19,8 +19,10 @@
 #include "rend/register.h"
 #include "rend/settings.h"
 #include "ui/canvas.h"
+#include "ui/layout.h"
 #include "ui/register.h"
 #include "ui/settings.h"
+#include "ui/widget.h"
 
 ecs_comp_define(DemoComp) { EcsEntityId window; };
 
@@ -101,6 +103,9 @@ ecs_system_define(DemoUpdateSys) {
 
     // TODO: Update content.
     // TODO: Draw content.
+    ui_layout_inner(
+        ctx.winCanvas, UiBase_Canvas, UiAlign_BottomCenter, ui_vector(1, 1), UiBase_Canvas);
+    ui_label(ctx.winCanvas, string_lit("Smoke here..."), .align = UiAlign_MiddleCenter);
   }
 }
 
