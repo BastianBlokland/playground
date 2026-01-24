@@ -164,21 +164,38 @@ static f32 sim_velocity_right(DemoUpdateContext* ctx, const u32 x, const u32 y) 
   return ctx->demo->velocitiesX[y * width + (x + 1)];
 }
 
-static f32 sim_edge_sample(
-    const f32* edgeValues, const u32 edgeCountX, const u32 edgeCountY, const f32 x, const f32 y) {
-
-  const i32 left   = math_clamp_i32((i32)x, 0, edgeCountX - 2);
-  const i32 bottom = math_clamp_i32((i32)y, 0, edgeCountY - 2);
+static f32 sim_sample(const f32* v, const u32 width, const u32 height, const f32 x, const f32 y) {
+  const i32 left   = (i32)math_round_down_f32(x);
+  const i32 bottom = (i32)math_round_down_f32(y);
   const i32 right  = left + 1;
   const i32 top    = bottom + 1;
 
   const f32 xFrac = math_clamp_f32(x - left, 0.0f, 1.0f);
   const f32 yFrac = math_clamp_f32(y - bottom, 0.0f, 1.0f);
 
-  const f32 v1 = edgeValues[top * edgeCountX + left];
-  const f32 v2 = edgeValues[top * edgeCountX + right];
-  const f32 v3 = edgeValues[bottom * edgeCountX + left];
-  const f32 v4 = edgeValues[bottom * edgeCountX + right];
+  f32 v1, v2, v3, v4;
+
+  // TODO: There are a bunch of redundant checks here.
+  if (top >= 0 && (u32)top < height && left >= 0 && (u32)left < width) {
+    v1 = v[top * width + left];
+  } else {
+    v1 = 0.0f;
+  }
+  if (top >= 0 && (u32)top < height && right >= 0 && (u32)right < width) {
+    v2 = v[top * width + right];
+  } else {
+    v2 = 0.0f;
+  }
+  if (bottom >= 0 && (u32)bottom < height && left >= 0 && (u32)left < width) {
+    v3 = v[bottom * width + left];
+  } else {
+    v3 = 0.0f;
+  }
+  if (bottom >= 0 && (u32)bottom < height && right >= 0 && (u32)right < width) {
+    v4 = v[bottom * width + right];
+  } else {
+    v4 = 0.0f;
+  }
 
   const f32 vTop    = math_lerp(v1, v2, xFrac);
   const f32 vBottom = math_lerp(v3, v4, xFrac);
@@ -200,12 +217,12 @@ static void sim_velocity_advect(DemoUpdateContext* ctx) {
         continue;
       }
       const f32 velX = ctx->demo->velocitiesX[y * (width + 1) + x];
-      const f32 velY = sim_edge_sample(ctx->demo->velocitiesY, width, height + 1, x, y + 0.5f);
+      const f32 velY = sim_sample(ctx->demo->velocitiesY, width, height + 1, x, y + 0.5f);
 
       const f32 prevX = x - velX * ctx->dt;
       const f32 prevY = y - velY * ctx->dt;
 
-      const f32 velNew = sim_edge_sample(ctx->demo->velocitiesX, width + 1, height, prevX, prevY);
+      const f32 velNew = sim_sample(ctx->demo->velocitiesX, width + 1, height, prevX, prevY);
 
       velocitiesX[y * (width + 1) + x] = velNew;
     }
@@ -218,13 +235,13 @@ static void sim_velocity_advect(DemoUpdateContext* ctx) {
         velocitiesY[y * width + x] = 0.0f;
         continue;
       }
-      const f32 velX = sim_edge_sample(ctx->demo->velocitiesX, width + 1, height, x + 0.5f, y);
+      const f32 velX = sim_sample(ctx->demo->velocitiesX, width + 1, height, x + 0.5f, y);
       const f32 velY = ctx->demo->velocitiesY[y * width + x];
 
       const f32 prevX = x - velX * ctx->dt;
       const f32 prevY = y - velY * ctx->dt;
 
-      const f32 velNew = sim_edge_sample(ctx->demo->velocitiesY, width, height + 1, prevX, prevY);
+      const f32 velNew = sim_sample(ctx->demo->velocitiesY, width, height + 1, prevX, prevY);
       velocitiesY[y * width + x] = velNew;
     }
   }
@@ -250,15 +267,13 @@ static void sim_smoke_advect(DemoUpdateContext* ctx) {
         smoke[y * width + x] = 0.0f;
         continue;
       }
-      const f32 velX =
-          sim_edge_sample(ctx->demo->velocitiesX, width + 1, height, x + 0.5f, y + 0.5f);
-      const f32 velY =
-          sim_edge_sample(ctx->demo->velocitiesY, width, height + 1, x + 0.5f, y + 0.5f);
+      const f32 velX = sim_sample(ctx->demo->velocitiesX, width + 1, height, x + 0.5f, y + 0.5f);
+      const f32 velY = sim_sample(ctx->demo->velocitiesY, width, height + 1, x + 0.5f, y + 0.5f);
 
       const f32 prevX = x - velX * ctx->dt;
       const f32 prevY = y - velY * ctx->dt;
 
-      smoke[y * width + x] = sim_edge_sample(ctx->demo->smoke, width, height, prevX, prevY);
+      smoke[y * width + x] = sim_sample(ctx->demo->smoke, width, height, prevX, prevY);
     }
   }
 
@@ -287,10 +302,10 @@ static f32 sim_velocity_divergence(DemoUpdateContext* ctx, const u32 x, const u3
 }
 
 static f32 sim_speed(DemoUpdateContext* ctx, const u32 x, const u32 y) {
-  const u32 width  = ctx->demo->simWidth;
-  const u32 height = ctx->demo->simHeight;
-  const f32 velX   = sim_edge_sample(ctx->demo->velocitiesX, width + 1, height, x + 0.5f, y + 0.5f);
-  const f32 velY   = sim_edge_sample(ctx->demo->velocitiesY, width, height + 1, x + 0.5f, y + 0.5f);
+  const u32 width    = ctx->demo->simWidth;
+  const u32 height   = ctx->demo->simHeight;
+  const f32 velX     = sim_sample(ctx->demo->velocitiesX, width + 1, height, x + 0.5f, y + 0.5f);
+  const f32 velY     = sim_sample(ctx->demo->velocitiesY, width, height + 1, x + 0.5f, y + 0.5f);
   const f32 speedSqr = velX * velX + velY * velY;
   return speedSqr != 0 ? intrinsic_sqrt_f32(speedSqr) : 0;
 }
