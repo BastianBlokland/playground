@@ -154,6 +154,80 @@ static f32 sim_velocity_right(DemoUpdateContext* ctx, const u32 x, const u32 y) 
   return ctx->demo->velocitiesX[y * width + (x + 1)];
 }
 
+static f32 sim_edge_sample(
+    const f32* edgeValues, const u32 edgeCountX, const u32 edgeCountY, const f32 x, const f32 y) {
+
+  const i32 left   = math_clamp_i32((i32)x, 0, edgeCountX - 2);
+  const i32 bottom = math_clamp_i32((i32)y, 0, edgeCountY - 2);
+  const i32 right  = left + 1;
+  const i32 top    = bottom + 1;
+
+  const f32 xFrac = math_clamp_f32(x - left, 0.0f, 1.0f);
+  const f32 yFrac = math_clamp_f32(y - bottom, 0.0f, 1.0f);
+
+  const f32 v1 = edgeValues[top * edgeCountX + left];
+  const f32 v2 = edgeValues[top * edgeCountX + right];
+  const f32 v3 = edgeValues[bottom * edgeCountX + left];
+  const f32 v4 = edgeValues[bottom * edgeCountX + right];
+
+  const f32 vTop    = math_lerp(v1, v2, xFrac);
+  const f32 vBottom = math_lerp(v3, v4, xFrac);
+  return math_lerp(vBottom, vTop, yFrac);
+}
+
+static void sim_velocity_advect(DemoUpdateContext* ctx) {
+  const u32 width  = ctx->demo->simWidth;
+  const u32 height = ctx->demo->simHeight;
+
+  f32* velocitiesX = alloc_array_t(g_allocScratch, f32, height * (width + 1));
+  f32* velocitiesY = alloc_array_t(g_allocScratch, f32, (height + 1) * width);
+
+  // Horizontal.
+  for (u32 y = 0; y != height; ++y) {
+    for (u32 x = 0; x != (width + 1); ++x) {
+      if (sim_solid(ctx, x, y) || (x && sim_solid(ctx, x - 1, y))) {
+        velocitiesX[y * (width + 1) + x] = 0.0f;
+        continue;
+      }
+      const f32 velX = ctx->demo->velocitiesX[y * (width + 1) + x];
+      const f32 velY = sim_edge_sample(ctx->demo->velocitiesY, width, height + 1, x, y + 0.5f);
+
+      const f32 prevX = x - velX * ctx->dt;
+      const f32 prevY = y - velY * ctx->dt;
+
+      const f32 velNew = sim_edge_sample(ctx->demo->velocitiesX, width + 1, height, prevX, prevY);
+
+      velocitiesX[y * (width + 1) + x] = velNew;
+    }
+  }
+
+  // Vertical.
+  for (u32 y = 0; y != (height + 1); ++y) {
+    for (u32 x = 0; x != width; ++x) {
+      if (sim_solid(ctx, x, y) || (y && sim_solid(ctx, x, y - 1))) {
+        velocitiesY[y * width + x] = 0.0f;
+        continue;
+      }
+      const f32 velX = sim_edge_sample(ctx->demo->velocitiesX, width + 1, height, x + 0.5f, y);
+      const f32 velY = ctx->demo->velocitiesY[y * width + x];
+
+      const f32 prevX = x - velX * ctx->dt;
+      const f32 prevY = y - velY * ctx->dt;
+
+      const f32 velNew = sim_edge_sample(ctx->demo->velocitiesY, width, height + 1, prevX, prevY);
+      velocitiesY[y * width + x] = velNew;
+    }
+  }
+
+  mem_cpy(
+      mem_create(ctx->demo->velocitiesX, sizeof(f32) * height * (width + 1)),
+      mem_create(velocitiesX, sizeof(f32) * height * (width + 1)));
+
+  mem_cpy(
+      mem_create(ctx->demo->velocitiesY, sizeof(f32) * (height + 1) * width),
+      mem_create(velocitiesY, sizeof(f32) * (height + 1) * width));
+}
+
 static void sim_attract(DemoUpdateContext* ctx, const u32 x, const u32 y, const f32 force) {
   // TODO: We need to pick what direction to attract into, either based on fractional coordinates
   // or by providing a direction.
@@ -253,6 +327,7 @@ static void sim_velocity_update(DemoUpdateContext* ctx) {
 }
 
 static void sim_update(DemoUpdateContext* ctx) {
+  sim_velocity_advect(ctx);
   if (ctx->demo->solve) {
     for (u32 i = 0; i != ctx->demo->solverIterations; ++i) {
       sim_solve_pressure(ctx);
@@ -349,7 +424,7 @@ static void sim_draw(DemoUpdateContext* ctx) {
         sim_solid_flip(ctx, x, y);
       }
       if (status == UiStatus_Hovered) {
-        sim_attract(ctx, x, y, 1.0f * ctx->dt);
+        sim_attract(ctx, x, y, 10.0f * ctx->dt);
       }
 
       ui_style_color(ctx->winCanvas, ui_color_white);
