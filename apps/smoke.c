@@ -28,6 +28,7 @@
 #include "ui/settings.h"
 #include "ui/shape.h"
 #include "ui/style.h"
+#include "ui/widget.h"
 
 ecs_comp_define(DemoComp) {
   EcsEntityId window;
@@ -53,8 +54,8 @@ static DemoComp* demo_create(EcsWorld* world) {
       DemoComp,
       .solverIterations = 16,
       .density          = 1.0f,
-      .simWidth         = 50,
-      .simHeight        = 50);
+      .simWidth         = 10,
+      .simHeight        = 10);
 
   const u32 width  = demo->simWidth;
   const u32 height = demo->simHeight;
@@ -113,7 +114,7 @@ static f32 sim_time_to_seconds(const TimeDuration dur) {
   return (f32)((f64)dur * g_toSecMul);
 }
 
-static bool sim_solid_test(DemoUpdateContext* ctx, const u32 x, const u32 y) {
+static bool sim_solid(DemoUpdateContext* ctx, const u32 x, const u32 y) {
   const u32 width = ctx->demo->simWidth;
   return bitset_test(ctx->demo->solidMap, y * width + x);
 }
@@ -123,19 +124,37 @@ static void sim_solid_flip(DemoUpdateContext* ctx, const u32 x, const u32 y) {
   bitset_flip(ctx->demo->solidMap, y * width + x);
 }
 
-static f32 sim_pressure_at(DemoUpdateContext* ctx, const u32 x, const u32 y) {
+static f32 sim_pressure(DemoUpdateContext* ctx, const u32 x, const u32 y) {
   const u32 width = ctx->demo->simWidth;
   return ctx->demo->pressure[y * width + x];
 }
 
-static f32 sim_velocity_x_at(DemoUpdateContext* ctx, const u32 x, const u32 y) {
+static f32 sim_velocity_bottom(DemoUpdateContext* ctx, const u32 x, const u32 y) {
+  const u32 width = ctx->demo->simWidth;
+  return ctx->demo->velocitiesY[y * width + x];
+}
+
+static f32 sim_velocity_top(DemoUpdateContext* ctx, const u32 x, const u32 y) {
+  const u32 width = ctx->demo->simWidth;
+  return ctx->demo->velocitiesY[(y + 1) * width + x];
+}
+
+static f32 sim_velocity_left(DemoUpdateContext* ctx, const u32 x, const u32 y) {
   const u32 width = ctx->demo->simWidth + 1;
   return ctx->demo->velocitiesX[y * width + x];
 }
 
-static f32 sim_velocity_y_at(DemoUpdateContext* ctx, const u32 x, const u32 y) {
-  const u32 width = ctx->demo->simWidth;
-  return ctx->demo->velocitiesY[y * width + x];
+static f32 sim_velocity_right(DemoUpdateContext* ctx, const u32 x, const u32 y) {
+  const u32 width = ctx->demo->simWidth + 1;
+  return ctx->demo->velocitiesX[y * width + (x + 1)];
+}
+
+static f32 sim_velocity_divergence(DemoUpdateContext* ctx, const u32 x, const u32 y) {
+  const f32 velTop    = sim_velocity_top(ctx, x, y);
+  const f32 velLeft   = sim_velocity_left(ctx, x, y);
+  const f32 velRight  = sim_velocity_right(ctx, x, y);
+  const f32 velBottom = sim_velocity_bottom(ctx, x, y);
+  return (velRight - velLeft) + (velTop - velBottom);
 }
 
 static void sim_solve_pressure(DemoUpdateContext* ctx) {
@@ -145,26 +164,26 @@ static void sim_solve_pressure(DemoUpdateContext* ctx) {
   for (u32 y = 0; y != height; ++y) {
     for (u32 x = 0; x != width; ++x) {
 
-      const bool flowTop    = !sim_solid_test(ctx, x + 0, y + 1);
-      const bool flowLeft   = !sim_solid_test(ctx, x - 1, y + 0);
-      const bool flowRight  = !sim_solid_test(ctx, x + 1, y + 0);
-      const bool flowBottom = !sim_solid_test(ctx, x + 0, y - 1);
+      const bool flowTop    = !sim_solid(ctx, x + 0, y + 1);
+      const bool flowLeft   = !sim_solid(ctx, x - 1, y + 0);
+      const bool flowRight  = !sim_solid(ctx, x + 1, y + 0);
+      const bool flowBottom = !sim_solid(ctx, x + 0, y - 1);
       const u8   flowCount  = flowLeft + flowRight + flowTop + flowBottom;
 
       f32 newPressure;
-      if (sim_solid_test(ctx, x, y) || !flowCount) {
+      if (sim_solid(ctx, x, y) || !flowCount) {
         newPressure = 0.0f;
       } else {
-        const f32 pressureTop    = sim_pressure_at(ctx, x, math_min(y + 1, height - 1)) * flowTop;
-        const f32 pressureLeft   = sim_pressure_at(ctx, x ? (x - 1) : 0, y) * flowLeft;
-        const f32 pressureRight  = sim_pressure_at(ctx, math_min(x + 1, width - 1), y) * flowRight;
-        const f32 pressureBottom = sim_pressure_at(ctx, x, y ? (y - 1) : 0) * flowBottom;
+        const f32 pressureTop    = sim_pressure(ctx, x, math_min(y + 1, height - 1)) * flowTop;
+        const f32 pressureLeft   = sim_pressure(ctx, x ? (x - 1) : 0, y) * flowLeft;
+        const f32 pressureRight  = sim_pressure(ctx, math_min(x + 1, width - 1), y) * flowRight;
+        const f32 pressureBottom = sim_pressure(ctx, x, y ? (y - 1) : 0) * flowBottom;
         const f32 pressureSum    = pressureRight + pressureLeft + pressureTop + pressureBottom;
 
-        const f32 velTop    = sim_velocity_y_at(ctx, x + 0, y + 1);
-        const f32 velLeft   = sim_velocity_x_at(ctx, x + 0, y + 0);
-        const f32 velRight  = sim_velocity_x_at(ctx, x + 1, y + 0);
-        const f32 velBottom = sim_velocity_y_at(ctx, x + 0, y + 0);
+        const f32 velTop    = sim_velocity_top(ctx, x, y);
+        const f32 velLeft   = sim_velocity_left(ctx, x, y);
+        const f32 velRight  = sim_velocity_right(ctx, x, y);
+        const f32 velBottom = sim_velocity_bottom(ctx, x, y);
         const f32 velTerm   = (velRight - velLeft + velTop - velBottom) / ctx->dt;
 
         newPressure = (pressureSum - density * velTerm) / flowCount;
@@ -182,11 +201,11 @@ static void sim_update_velocities(DemoUpdateContext* ctx) {
   // Horizontal.
   for (u32 y = 0; y != height; ++y) {
     for (u32 x = 0; x != (width + 1); ++x) {
-      if (sim_solid_test(ctx, x, y) || (x && sim_solid_test(ctx, x - 1, y))) {
+      if (sim_solid(ctx, x, y) || (x && sim_solid(ctx, x - 1, y))) {
         continue;
       }
-      const f32 pressureRight = sim_pressure_at(ctx, x, y);
-      const f32 pressureLeft  = x ? sim_pressure_at(ctx, x - 1, y) : pressureRight;
+      const f32 pressureRight = sim_pressure(ctx, math_min(x, width - 1), y);
+      const f32 pressureLeft  = x ? sim_pressure(ctx, x - 1, y) : pressureRight;
       ctx->demo->velocitiesX[y * (width + 1) + x] -= k * (pressureRight - pressureLeft);
     }
   }
@@ -194,11 +213,11 @@ static void sim_update_velocities(DemoUpdateContext* ctx) {
   // Vertical.
   for (u32 y = 0; y != (height + 1); ++y) {
     for (u32 x = 0; x != width; ++x) {
-      if (sim_solid_test(ctx, x, y) || (y && sim_solid_test(ctx, x, y - 1))) {
+      if (sim_solid(ctx, x, y) || (y && sim_solid(ctx, x, y - 1))) {
         continue;
       }
-      const f32 pressureTop    = sim_pressure_at(ctx, x, y);
-      const f32 pressureBottom = y ? sim_pressure_at(ctx, x, y - 1) : pressureTop;
+      const f32 pressureTop    = sim_pressure(ctx, x, math_min(y, height - 1));
+      const f32 pressureBottom = y ? sim_pressure(ctx, x, y - 1) : pressureTop;
       ctx->demo->velocitiesY[y * width + x] -= k * (pressureTop - pressureBottom);
     }
   }
@@ -217,7 +236,7 @@ static void sim_draw(DemoUpdateContext* ctx) {
   ui_style_push(ctx->winCanvas);
 
   const UiVector canvasSize = ui_canvas_resolution(ctx->winCanvas);
-  const UiVector cellSize   = ui_vector(15, 15);
+  const UiVector cellSize   = ui_vector(50, 50);
   const UiVector cellOrg    = {
       canvasSize.width * 0.5f - ctx->demo->simWidth * cellSize.width * 0.5f,
       canvasSize.height * 0.5f - ctx->demo->simHeight * cellSize.height * 0.5f,
@@ -227,12 +246,13 @@ static void sim_draw(DemoUpdateContext* ctx) {
   for (u32 y = 0; y != ctx->demo->simHeight; ++y) {
     for (u32 x = 0; x != ctx->demo->simWidth; ++x) {
       UiColor color;
-      if (sim_solid_test(ctx, x, y)) {
+      if (sim_solid(ctx, x, y)) {
         color = ui_color_gray;
       } else {
-        const f32 pressure = sim_pressure_at(ctx, x, y);
-        const f32 frac     = math_clamp_f32(pressure, 0.0f, 1.0f);
-        color              = ui_color_lerp(ui_color_green, ui_color_red, frac);
+        const f32 divergence = sim_velocity_divergence(ctx, x, y);
+        const f32 pressure   = sim_pressure(ctx, x, y);
+        const f32 frac       = math_clamp_f32(pressure, 0.0f, 1.0f);
+        color                = ui_color_lerp(ui_color_green, ui_color_red, frac);
       }
       ui_style_color(ctx->winCanvas, color);
 
@@ -242,6 +262,43 @@ static void sim_draw(DemoUpdateContext* ctx) {
       if (ui_canvas_elem_status(ctx->winCanvas, id) == UiStatus_Activated) {
         sim_solid_flip(ctx, x, y);
       }
+
+      const f32 velTop    = sim_velocity_top(ctx, x, y);
+      const f32 velLeft   = sim_velocity_left(ctx, x, y);
+      const f32 velRight  = sim_velocity_right(ctx, x, y);
+      const f32 velBottom = sim_velocity_bottom(ctx, x, y);
+
+      ui_style_color(ctx->winCanvas, ui_color_white);
+      const UiVector posCenter = {
+          pos.x + cellSize.x * 0.5f,
+          pos.y + cellSize.y * 0.5f,
+      };
+      const f32 yTop   = pos.y + cellSize.y;
+      const f32 xRight = pos.x + cellSize.x;
+      ui_line(
+          ctx->winCanvas,
+          ui_vector(posCenter.x, yTop),
+          ui_vector(posCenter.x, yTop - math_clamp_f32(velTop, -100, 100)),
+          .base  = UiBase_Absolute,
+          .width = 3);
+      ui_line(
+          ctx->winCanvas,
+          ui_vector(posCenter.x, pos.y),
+          ui_vector(posCenter.x, pos.y + math_clamp_f32(velBottom, -100, 100)),
+          .base  = UiBase_Absolute,
+          .width = 3);
+      ui_line(
+          ctx->winCanvas,
+          ui_vector(pos.x, posCenter.y),
+          ui_vector(pos.x + math_clamp_f32(velLeft, -100, 100), posCenter.y),
+          .base  = UiBase_Absolute,
+          .width = 3);
+      ui_line(
+          ctx->winCanvas,
+          ui_vector(xRight, posCenter.y),
+          ui_vector(xRight - math_clamp_f32(velRight, -100, 100), posCenter.y),
+          .base  = UiBase_Absolute,
+          .width = 3);
     }
   }
 
