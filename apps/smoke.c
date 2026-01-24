@@ -22,9 +22,14 @@
 #include "ui/layout.h"
 #include "ui/register.h"
 #include "ui/settings.h"
-#include "ui/widget.h"
+#include "ui/shape.h"
+#include "ui/style.h"
 
-ecs_comp_define(DemoComp) { EcsEntityId window; };
+ecs_comp_define(DemoComp) {
+  EcsEntityId window;
+
+  u32 simWidth, simHeight;
+};
 
 ecs_comp_define(DemoWindowComp) { EcsEntityId uiCanvas; };
 
@@ -51,6 +56,34 @@ typedef struct {
   GapWindowComp*  winComp;
   UiCanvasComp*   winCanvas;
 } DemoUpdateContext;
+
+static void sim_update(DemoUpdateContext* ctx) { (void)ctx; }
+
+static void sim_draw(DemoUpdateContext* ctx) {
+  ui_canvas_id_block_next(ctx->winCanvas);
+  ui_layout_push(ctx->winCanvas);
+  ui_style_push(ctx->winCanvas);
+
+  const UiVector canvasSize = ui_canvas_resolution(ctx->winCanvas);
+  const UiVector cellSize   = ui_vector(15, 15);
+  const UiVector cellOrg    = {
+      canvasSize.width * 0.5f - ctx->demo->simWidth * cellSize.width * 0.5f,
+      canvasSize.height * 0.5f - ctx->demo->simHeight * cellSize.height * 0.5f,
+  };
+
+  ui_layout_resize(ctx->winCanvas, UiAlign_BottomLeft, cellSize, UiBase_Absolute, Ui_XY);
+  for (u32 y = 0; y != ctx->demo->simHeight; ++y) {
+    for (u32 x = 0; x != ctx->demo->simWidth; ++x) {
+      const UiVector pos = ui_vector(cellOrg.x + x * cellSize.x, cellOrg.y + y * cellSize.y);
+      ui_layout_set_pos(ctx->winCanvas, UiBase_Canvas, pos, UiBase_Absolute);
+      ui_canvas_draw_glyph(ctx->winCanvas, UiShape_Square, 5, UiFlags_None);
+    }
+  }
+
+  ui_style_pop(ctx->winCanvas);
+  ui_layout_pop(ctx->winCanvas);
+  ui_canvas_id_block_next(ctx->winCanvas);
+}
 
 ecs_view_define(FrameUpdateView) { ecs_access_write(RendSettingsGlobalComp); }
 
@@ -100,12 +133,8 @@ ecs_system_define(DemoUpdateSys) {
       ctx.winCanvas = ecs_view_write_t(canvasItr, UiCanvasComp);
       ui_canvas_reset(ctx.winCanvas);
     }
-
-    // TODO: Update content.
-    // TODO: Draw content.
-    ui_layout_inner(
-        ctx.winCanvas, UiBase_Canvas, UiAlign_BottomCenter, ui_vector(1, 1), UiBase_Canvas);
-    ui_label(ctx.winCanvas, string_lit("Smoke here..."), .align = UiAlign_MiddleCenter);
+    sim_update(&ctx);
+    sim_draw(&ctx);
   }
 }
 
@@ -216,7 +245,8 @@ bool app_ecs_init(EcsWorld* world, const CliInvocation* invoc) {
   RendSettingsComp* rendSettingsWindow = rend_settings_window_init(world, window);
   rendSettingsWindow->flags |= RendFlags_2D;
 
-  ecs_world_add_t(world, ecs_world_global(world), DemoComp, .window = window);
+  ecs_world_add_t(
+      world, ecs_world_global(world), DemoComp, .window = window, .simWidth = 50, .simHeight = 50);
   return true; // Initialization succeeded.
 }
 
