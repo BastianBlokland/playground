@@ -10,6 +10,7 @@
 #include "core/diag.h"
 #include "core/file.h"
 #include "core/float.h"
+#include "core/intrinsic.h"
 #include "core/math.h"
 #include "core/rng.h"
 #include "core/version.h"
@@ -247,6 +248,15 @@ static f32 sim_velocity_divergence(DemoUpdateContext* ctx, const u32 x, const u3
   return (velRight - velLeft) + (velTop - velBottom);
 }
 
+static f32 sim_speed(DemoUpdateContext* ctx, const u32 x, const u32 y) {
+  const u32 width  = ctx->demo->simWidth;
+  const u32 height = ctx->demo->simHeight;
+  const f32 velX   = sim_edge_sample(ctx->demo->velocitiesX, width + 1, height, x + 0.5f, y + 0.5f);
+  const f32 velY   = sim_edge_sample(ctx->demo->velocitiesY, width, height + 1, x + 0.5f, y + 0.5f);
+  const f32 speedSqr = velX * velX + velY * velY;
+  return speedSqr != 0 ? intrinsic_sqrt_f32(speedSqr) : 0;
+}
+
 static void sim_solve_pressure(DemoUpdateContext* ctx) {
   const u32 width   = ctx->demo->simWidth;
   const u32 height  = ctx->demo->simHeight;
@@ -406,13 +416,17 @@ static void sim_draw(DemoUpdateContext* ctx) {
     for (u32 x = 0; x != simWidth; ++x) {
       const f32 divergence = sim_velocity_divergence(ctx, x, y);
       const f32 pressure   = sim_pressure(ctx, x, y);
+      const f32 speed      = sim_speed(ctx, x, y);
 
       UiColor color;
       if (sim_solid(ctx, x, y)) {
         color = ui_color_gray;
       } else {
-        const f32 frac = math_clamp_f32(pressure * 0.01f, -1.0f, 1.0f);
-        color          = ui_color_lerp(ui_color_green, ui_color_red, (frac + 1.0f) * 0.5f);
+        // const f32 frac = math_clamp_f32(pressure * 0.01f, -1.0f, 1.0f);
+        // color          = ui_color_lerp(ui_color_green, ui_color_red, (frac + 1.0f) * 0.5f);
+
+        const f32 frac = math_clamp_f32(speed * 0.5f, 0.0f, 1.0f);
+        color          = ui_color_lerp(ui_color_green, ui_color_red, frac);
       }
       ui_style_color(ctx->winCanvas, color);
 
