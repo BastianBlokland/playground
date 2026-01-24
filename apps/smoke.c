@@ -5,6 +5,7 @@
 #include "cli/parse.h"
 #include "cli/read.h"
 #include "cli/validate.h"
+#include "core/alloc.h"
 #include "core/diag.h"
 #include "core/file.h"
 #include "core/math.h"
@@ -30,10 +31,35 @@ ecs_comp_define(DemoComp) {
   EcsEntityId window;
   TimeSteady  lastTime;
 
-  u32 simWidth, simHeight;
+  u32  simWidth, simHeight;
+  f32* velocitiesX; // f32[simHeight * (simWidth + 1)]
+  f32* velocitiesY; // f32[(simHeight + 1) * simWidth]
 };
 
 ecs_comp_define(DemoWindowComp) { EcsEntityId uiCanvas; };
+
+static DemoComp* demo_create(EcsWorld* world) {
+  const EcsEntityId global = ecs_world_global(world);
+
+  DemoComp* demo = ecs_world_add_t(world, global, DemoComp, .simWidth = 50, .simHeight = 50);
+
+  const u32 width  = demo->simWidth;
+  const u32 height = demo->simHeight;
+
+  demo->velocitiesX = alloc_array_t(g_allocHeap, f32, height * (width + 1));
+  demo->velocitiesY = alloc_array_t(g_allocHeap, f32, (height + 1) * width);
+
+  return demo;
+}
+
+static void demo_destroy(void* data) {
+  DemoComp* comp   = data;
+  const u32 width  = comp->simWidth;
+  const u32 height = comp->simHeight;
+
+  alloc_free_array_t(g_allocHeap, comp->velocitiesX, height * (width + 1));
+  alloc_free_array_t(g_allocHeap, comp->velocitiesY, (height + 1) * width);
+}
 
 static EcsEntityId demo_window_create(EcsWorld* world, const u16 width, const u16 height) {
   const GapVector      size           = {.width = (i32)width, .height = (i32)height};
@@ -154,13 +180,8 @@ ecs_system_define(DemoUpdateSys) {
   }
 }
 
-static void ecs_destruct_demo_comp(void* data) {
-  DemoComp* comp = data;
-  (void)comp;
-}
-
 ecs_module_init(demo_module) {
-  ecs_register_comp(DemoComp, .destructor = ecs_destruct_demo_comp);
+  ecs_register_comp(DemoComp, .destructor = demo_destroy);
   ecs_register_comp(DemoWindowComp);
 
   ecs_register_view(FrameUpdateView);
@@ -257,12 +278,10 @@ bool app_ecs_init(EcsWorld* world, const CliInvocation* invoc) {
   const u16 windowWidth  = (u16)cli_read_u64(invoc, g_optWidth, 800);
   const u16 windowHeight = (u16)cli_read_u64(invoc, g_optHeight, 800);
 
-  const EcsEntityId window             = demo_window_create(world, windowWidth, windowHeight);
-  RendSettingsComp* rendSettingsWindow = rend_settings_window_init(world, window);
-  rendSettingsWindow->flags |= RendFlags_2D;
+  DemoComp* demo = demo_create(world);
 
-  ecs_world_add_t(
-      world, ecs_world_global(world), DemoComp, .window = window, .simWidth = 50, .simHeight = 50);
+  demo->window = demo_window_create(world, windowWidth, windowHeight);
+  rend_settings_window_init(world, demo->window)->flags |= RendFlags_2D;
 
   return true; // Initialization succeeded.
 }
