@@ -6,6 +6,7 @@
 #include "cli/read.h"
 #include "cli/validate.h"
 #include "core/alloc.h"
+#include "core/bits.h"
 #include "core/diag.h"
 #include "core/file.h"
 #include "core/math.h"
@@ -31,9 +32,11 @@ ecs_comp_define(DemoComp) {
   EcsEntityId window;
   TimeSteady  lastTime;
 
-  u32  simWidth, simHeight;
-  f32* velocitiesX; // f32[simHeight * (simWidth + 1)]
-  f32* velocitiesY; // f32[(simHeight + 1) * simWidth]
+  u32    simWidth, simHeight;
+  f32*   velocitiesX; // f32[simHeight * (simWidth + 1)]
+  f32*   velocitiesY; // f32[(simHeight + 1) * simWidth]
+  f32*   pressure;    // f32[simHeight * simWidth]
+  BitSet solidMap;    // bit[simHeight * simWidth]
 };
 
 ecs_comp_define(DemoWindowComp) { EcsEntityId uiCanvas; };
@@ -48,6 +51,13 @@ static DemoComp* demo_create(EcsWorld* world) {
 
   demo->velocitiesX = alloc_array_t(g_allocHeap, f32, height * (width + 1));
   demo->velocitiesY = alloc_array_t(g_allocHeap, f32, (height + 1) * width);
+  demo->pressure    = alloc_array_t(g_allocHeap, f32, height * width);
+  demo->solidMap    = alloc_alloc(g_allocHeap, bits_to_bytes(height * width) + 1, 1);
+
+  mem_set(mem_create(demo->velocitiesX, sizeof(f32) * height * (width + 1)), 0);
+  mem_set(mem_create(demo->velocitiesY, sizeof(f32) * (height + 1) * width), 0);
+  mem_set(mem_create(demo->pressure, sizeof(f32) * height * width), 0);
+  mem_set(demo->solidMap, 0);
 
   return demo;
 }
@@ -59,6 +69,8 @@ static void demo_destroy(void* data) {
 
   alloc_free_array_t(g_allocHeap, comp->velocitiesX, height * (width + 1));
   alloc_free_array_t(g_allocHeap, comp->velocitiesY, (height + 1) * width);
+  alloc_free_array_t(g_allocHeap, comp->pressure, height * width);
+  alloc_free(g_allocHeap, comp->solidMap);
 }
 
 static EcsEntityId demo_window_create(EcsWorld* world, const u16 width, const u16 height) {
