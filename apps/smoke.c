@@ -149,6 +149,13 @@ static f32 sim_velocity_right(DemoUpdateContext* ctx, const u32 x, const u32 y) 
   return ctx->demo->velocitiesX[y * width + (x + 1)];
 }
 
+static void sim_attract(DemoUpdateContext* ctx, const u32 x, const u32 y, const f32 force) {
+  ctx->demo->velocitiesY[y * ctx->demo->simWidth + x] -= force * ctx->dt;
+  ctx->demo->velocitiesY[(y + 1) * ctx->demo->simWidth + x] += force * ctx->dt;
+  ctx->demo->velocitiesX[y * (ctx->demo->simWidth + 1) + x] -= force * ctx->dt;
+  ctx->demo->velocitiesX[y * (ctx->demo->simWidth + 1) + (x + 1)] += force * ctx->dt;
+}
+
 static f32 sim_velocity_divergence(DemoUpdateContext* ctx, const u32 x, const u32 y) {
   const f32 velTop    = sim_velocity_top(ctx, x, y);
   const f32 velLeft   = sim_velocity_left(ctx, x, y);
@@ -202,6 +209,7 @@ static void sim_update_velocities(DemoUpdateContext* ctx) {
   for (u32 y = 0; y != height; ++y) {
     for (u32 x = 0; x != (width + 1); ++x) {
       if (sim_solid(ctx, x, y) || (x && sim_solid(ctx, x - 1, y))) {
+        ctx->demo->velocitiesX[y * (width + 1) + x] = 0;
         continue;
       }
       const f32 pressureRight = sim_pressure(ctx, math_min(x, width - 1), y);
@@ -214,6 +222,7 @@ static void sim_update_velocities(DemoUpdateContext* ctx) {
   for (u32 y = 0; y != (height + 1); ++y) {
     for (u32 x = 0; x != width; ++x) {
       if (sim_solid(ctx, x, y) || (y && sim_solid(ctx, x, y - 1))) {
+        ctx->demo->velocitiesY[y * width + x] = 0;
         continue;
       }
       const f32 pressureTop    = sim_pressure(ctx, x, math_min(y, height - 1));
@@ -251,7 +260,7 @@ static void sim_draw(DemoUpdateContext* ctx) {
       } else {
         const f32 divergence = sim_velocity_divergence(ctx, x, y);
         const f32 pressure   = sim_pressure(ctx, x, y);
-        const f32 frac       = math_clamp_f32(pressure, 0.0f, 1.0f);
+        const f32 frac       = math_clamp_f32(divergence, 0.0f, 1.0f);
         color                = ui_color_lerp(ui_color_green, ui_color_red, frac);
       }
       ui_style_color(ctx->winCanvas, color);
@@ -259,8 +268,12 @@ static void sim_draw(DemoUpdateContext* ctx) {
       const UiVector pos = ui_vector(cellOrg.x + x * cellSize.x, cellOrg.y + y * cellSize.y);
       ui_layout_set_pos(ctx->winCanvas, UiBase_Canvas, pos, UiBase_Absolute);
       const UiId id = ui_canvas_draw_glyph(ctx->winCanvas, UiShape_Square, 5, UiFlags_Interactable);
-      if (ui_canvas_elem_status(ctx->winCanvas, id) == UiStatus_Activated) {
+      const UiStatus status = ui_canvas_elem_status(ctx->winCanvas, id);
+      if (status == UiStatus_Activated) {
         sim_solid_flip(ctx, x, y);
+      }
+      if (status == UiStatus_Hovered) {
+        sim_attract(ctx, x, y, 10.f);
       }
 
       const f32 velTop    = sim_velocity_top(ctx, x, y);
