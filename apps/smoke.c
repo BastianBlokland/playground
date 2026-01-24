@@ -44,6 +44,7 @@ ecs_comp_define(DemoComp) {
   f32*   velocitiesX; // f32[simHeight * (simWidth + 1)]
   f32*   velocitiesY; // f32[(simHeight + 1) * simWidth]
   f32*   pressure;    // f32[simHeight * simWidth]
+  f32*   smoke;       // f32[simHeight * simWidth]
   BitSet solidMap;    // bit[simHeight * simWidth]
 };
 
@@ -69,11 +70,13 @@ static DemoComp* demo_create(EcsWorld* world) {
   demo->velocitiesX = alloc_array_t(g_allocHeap, f32, height * (width + 1));
   demo->velocitiesY = alloc_array_t(g_allocHeap, f32, (height + 1) * width);
   demo->pressure    = alloc_array_t(g_allocHeap, f32, height * width);
+  demo->smoke       = alloc_array_t(g_allocHeap, f32, height * width);
   demo->solidMap    = alloc_alloc(g_allocHeap, bits_to_bytes(height * width) + 1, 1);
 
   mem_set(mem_create(demo->velocitiesX, sizeof(f32) * height * (width + 1)), 0);
   mem_set(mem_create(demo->velocitiesY, sizeof(f32) * (height + 1) * width), 0);
   mem_set(mem_create(demo->pressure, sizeof(f32) * height * width), 0);
+  mem_set(mem_create(demo->smoke, sizeof(f32) * height * width), 0);
   mem_set(demo->solidMap, 0);
 
   return demo;
@@ -87,6 +90,7 @@ static void demo_destroy(void* data) {
   alloc_free_array_t(g_allocHeap, comp->velocitiesX, height * (width + 1));
   alloc_free_array_t(g_allocHeap, comp->velocitiesY, (height + 1) * width);
   alloc_free_array_t(g_allocHeap, comp->pressure, height * width);
+  alloc_free_array_t(g_allocHeap, comp->smoke, height * width);
   alloc_free(g_allocHeap, comp->solidMap);
 }
 
@@ -133,6 +137,11 @@ static void sim_solid_flip(DemoUpdateContext* ctx, const u32 x, const u32 y) {
 static f32 sim_pressure(DemoUpdateContext* ctx, const u32 x, const u32 y) {
   const u32 width = ctx->demo->simWidth;
   return ctx->demo->pressure[y * width + x];
+}
+
+static f32 sim_smoke(DemoUpdateContext* ctx, const u32 x, const u32 y) {
+  const u32 width = ctx->demo->simWidth;
+  return ctx->demo->smoke[y * width + x];
 }
 
 static f32 sim_velocity_bottom(DemoUpdateContext* ctx, const u32 x, const u32 y) {
@@ -227,6 +236,35 @@ static void sim_velocity_advect(DemoUpdateContext* ctx) {
   mem_cpy(
       mem_create(ctx->demo->velocitiesY, sizeof(f32) * (height + 1) * width),
       mem_create(velocitiesY, sizeof(f32) * (height + 1) * width));
+}
+
+static void sim_smoke_advect(DemoUpdateContext* ctx) {
+  const u32 width  = ctx->demo->simWidth;
+  const u32 height = ctx->demo->simHeight;
+
+  f32* smoke = alloc_array_t(g_allocScratch, f32, height * width);
+
+  for (u32 y = 0; y != height; ++y) {
+    for (u32 x = 0; x != width; ++x) {
+      if (sim_solid(ctx, x, y) || (x && sim_solid(ctx, x - 1, y))) {
+        smoke[y * width + x] = 0.0f;
+        continue;
+      }
+      const f32 velX =
+          sim_edge_sample(ctx->demo->velocitiesX, width + 1, height, x + 0.5f, y + 0.5f);
+      const f32 velY =
+          sim_edge_sample(ctx->demo->velocitiesY, width, height + 1, x + 0.5f, y + 0.5f);
+
+      const f32 prevX = x - velX * ctx->dt;
+      const f32 prevY = y - velY * ctx->dt;
+
+      smoke[y * width + x] = sim_edge_sample(ctx->demo->smoke, width, height, prevX, prevY);
+    }
+  }
+
+  mem_cpy(
+      mem_create(ctx->demo->smoke, sizeof(f32) * height * width),
+      mem_create(smoke, sizeof(f32) * height * width));
 }
 
 static void sim_attract(DemoUpdateContext* ctx, const u32 x, const u32 y, const f32 force) {
@@ -337,6 +375,7 @@ static void sim_velocity_update(DemoUpdateContext* ctx) {
 }
 
 static void sim_update(DemoUpdateContext* ctx) {
+  sim_smoke_advect(ctx);
   sim_velocity_advect(ctx);
   if (ctx->demo->solve) {
     for (u32 i = 0; i != ctx->demo->solverIterations; ++i) {
@@ -417,6 +456,7 @@ static void sim_draw(DemoUpdateContext* ctx) {
       const f32 divergence = sim_velocity_divergence(ctx, x, y);
       const f32 pressure   = sim_pressure(ctx, x, y);
       const f32 speed      = sim_speed(ctx, x, y);
+      const f32 smoke      = sim_smoke(ctx, x, y);
 
       UiColor color;
       if (sim_solid(ctx, x, y)) {
@@ -425,17 +465,20 @@ static void sim_draw(DemoUpdateContext* ctx) {
         // const f32 frac = math_clamp_f32(pressure * 0.01f, -1.0f, 1.0f);
         // color          = ui_color_lerp(ui_color_green, ui_color_red, (frac + 1.0f) * 0.5f);
 
-        const f32 frac = math_clamp_f32(speed * 0.5f, 0.0f, 1.0f);
+        const f32 frac = math_clamp_f32(smoke * 10, 0.0f, 1.0f);
         color          = ui_color_lerp(ui_color_green, ui_color_red, frac);
       }
       ui_style_color(ctx->winCanvas, color);
 
       const UiVector pos = ui_vector(cellOrg.x + x * cellSize.x, cellOrg.y + y * cellSize.y);
       ui_layout_set_pos(ctx->winCanvas, UiBase_Canvas, pos, UiBase_Absolute);
-      const UiId id = ui_canvas_draw_glyph(ctx->winCanvas, UiShape_Square, 5, UiFlags_Interactable);
+      const UiId id = ui_canvas_draw_glyph(
+          ctx->winCanvas, UiShape_Square, 5, UiFlags_Interactable | UiFlags_InteractSupportAlt);
       const UiStatus status = ui_canvas_elem_status(ctx->winCanvas, id);
       if (status == UiStatus_Activated) {
         sim_solid_flip(ctx, x, y);
+      } else if (status == UiStatus_ActivatedAlt) {
+        ctx->demo->smoke[y * simWidth + x] = 5.0f;
       }
       if (status == UiStatus_Hovered) {
         sim_attract(ctx, x, y, 10.0f * ctx->dt);
