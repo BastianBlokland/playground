@@ -61,8 +61,8 @@ static DemoComp* demo_create(EcsWorld* world) {
       .updateVelocities = true,
       .solverIterations = 16,
       .density          = 1.0f,
-      .simWidth         = 10,
-      .simHeight        = 10);
+      .simWidth         = 15,
+      .simHeight        = 15);
 
   const u32 width  = demo->simWidth;
   const u32 height = demo->simHeight;
@@ -142,6 +142,11 @@ static f32 sim_pressure(DemoUpdateContext* ctx, const u32 x, const u32 y) {
 static f32 sim_smoke(DemoUpdateContext* ctx, const u32 x, const u32 y) {
   const u32 width = ctx->demo->simWidth;
   return ctx->demo->smoke[y * width + x];
+}
+
+static void sim_smoke_emit(DemoUpdateContext* ctx, const u32 x, const u32 y, const f32 smoke) {
+  const u32 width = ctx->demo->simWidth;
+  ctx->demo->smoke[y * width + x] += smoke;
 }
 
 static f32 sim_velocity_bottom(DemoUpdateContext* ctx, const u32 x, const u32 y) {
@@ -282,15 +287,9 @@ static void sim_smoke_advect(DemoUpdateContext* ctx) {
       mem_create(smoke, sizeof(f32) * height * width));
 }
 
-static void sim_attract(DemoUpdateContext* ctx, const u32 x, const u32 y, const f32 force) {
-  // TODO: We need to pick what direction to attract into, either based on fractional coordinates
-  // or by providing a direction.
-  const f32 biasFactor = 0.5f;
-
+static void sim_push(DemoUpdateContext* ctx, const u32 x, const u32 y, const f32 force) {
   ctx->demo->velocitiesY[y * ctx->demo->simWidth + x] += force;
-  ctx->demo->velocitiesY[(y + 1) * ctx->demo->simWidth + x] -= force * biasFactor;
   ctx->demo->velocitiesX[y * (ctx->demo->simWidth + 1) + x] += force;
-  ctx->demo->velocitiesX[y * (ctx->demo->simWidth + 1) + (x + 1)] -= force * biasFactor;
 }
 
 static f32 sim_velocity_divergence(DemoUpdateContext* ctx, const u32 x, const u32 y) {
@@ -473,6 +472,8 @@ static void sim_draw(DemoUpdateContext* ctx) {
       const f32 speed      = sim_speed(ctx, x, y);
       const f32 smoke      = sim_smoke(ctx, x, y);
 
+      (void)speed;
+
       UiColor color;
       if (sim_solid(ctx, x, y)) {
         color = ui_color_gray;
@@ -493,10 +494,10 @@ static void sim_draw(DemoUpdateContext* ctx) {
       if (status == UiStatus_Activated) {
         sim_solid_flip(ctx, x, y);
       } else if (status == UiStatus_ActivatedAlt) {
-        ctx->demo->smoke[y * simWidth + x] = 5.0f;
+        sim_smoke_emit(ctx, x, y, 5);
       }
       if (status == UiStatus_Hovered) {
-        sim_attract(ctx, x, y, 10.0f * ctx->dt);
+        sim_push(ctx, x, y, 500.0f * ctx->dt);
       }
 
       ui_style_color(ctx->winCanvas, ui_color_white);
@@ -537,7 +538,7 @@ static void sim_draw(DemoUpdateContext* ctx) {
       ui_line(
           ctx->winCanvas,
           pos,
-          ui_vector(pos.x + velo * cellSize.x * 0.5f, pos.y),
+          ui_vector(pos.x + velo * cellSize.x * 0.05f, pos.y),
           .base  = UiBase_Absolute,
           .width = 3.0f);
     }
@@ -559,7 +560,7 @@ static void sim_draw(DemoUpdateContext* ctx) {
       ui_line(
           ctx->winCanvas,
           pos,
-          ui_vector(pos.x, pos.y + velo * cellSize.y * 0.5f),
+          ui_vector(pos.x, pos.y + velo * cellSize.y * 0.05f),
           .base  = UiBase_Absolute,
           .width = 3.0f);
     }
@@ -786,8 +787,8 @@ bool app_ecs_init(EcsWorld* world, const CliInvocation* invoc) {
   rend_settings_global_init(world, false /* devSupport */);
   ui_settings_global_init(world);
 
-  const u16 windowWidth  = (u16)cli_read_u64(invoc, g_optWidth, 800);
-  const u16 windowHeight = (u16)cli_read_u64(invoc, g_optHeight, 800);
+  const u16 windowWidth  = (u16)cli_read_u64(invoc, g_optWidth, 1200);
+  const u16 windowHeight = (u16)cli_read_u64(invoc, g_optHeight, 1200);
 
   DemoComp* demo = demo_create(world);
 
