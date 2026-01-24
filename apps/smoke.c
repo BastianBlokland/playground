@@ -268,7 +268,7 @@ static void sim_smoke_advect(DemoUpdateContext* ctx) {
 
   for (u32 y = 0; y != height; ++y) {
     for (u32 x = 0; x != width; ++x) {
-      if (sim_solid(ctx, x, y) || (x && sim_solid(ctx, x - 1, y))) {
+      if (sim_solid(ctx, x, y)) {
         smoke[y * width + x] = 0.0f;
         continue;
       }
