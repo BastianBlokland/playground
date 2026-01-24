@@ -145,16 +145,16 @@ static void sim_solve_pressure(DemoUpdateContext* ctx) {
   for (u32 y = 0; y != height; ++y) {
     for (u32 x = 0; x != width; ++x) {
 
+      const bool flowTop    = !sim_solid_test(ctx, x + 0, y + 1);
+      const bool flowLeft   = !sim_solid_test(ctx, x - 1, y + 0);
+      const bool flowRight  = !sim_solid_test(ctx, x + 1, y + 0);
+      const bool flowBottom = !sim_solid_test(ctx, x + 0, y - 1);
+      const u8   flowCount  = flowLeft + flowRight + flowTop + flowBottom;
+
       f32 newPressure;
-      if (sim_solid_test(ctx, x, y)) {
+      if (sim_solid_test(ctx, x, y) || !flowCount) {
         newPressure = 0.0f;
       } else {
-        const bool flowTop    = !sim_solid_test(ctx, x + 0, y + 1);
-        const bool flowLeft   = !sim_solid_test(ctx, x - 1, y + 0);
-        const bool flowRight  = !sim_solid_test(ctx, x + 1, y + 0);
-        const bool flowBottom = !sim_solid_test(ctx, x + 0, y - 1);
-        const u8   flowCount  = flowLeft + flowRight + flowTop + flowBottom;
-
         const f32 pressureTop    = sim_pressure_at(ctx, x, math_min(y + 1, height - 1)) * flowTop;
         const f32 pressureLeft   = sim_pressure_at(ctx, x ? (x - 1) : 0, y) * flowLeft;
         const f32 pressureRight  = sim_pressure_at(ctx, math_min(x + 1, width - 1), y) * flowRight;
@@ -174,10 +174,41 @@ static void sim_solve_pressure(DemoUpdateContext* ctx) {
   }
 }
 
+static void sim_update_velocities(DemoUpdateContext* ctx) {
+  const f32 k      = ctx->dt / ctx->demo->density;
+  const u32 width  = ctx->demo->simWidth;
+  const u32 height = ctx->demo->simHeight;
+
+  // Horizontal.
+  for (u32 y = 0; y != height; ++y) {
+    for (u32 x = 0; x != (width + 1); ++x) {
+      if (sim_solid_test(ctx, x, y) || (x && sim_solid_test(ctx, x - 1, y))) {
+        continue;
+      }
+      const f32 pressureRight = sim_pressure_at(ctx, x, y);
+      const f32 pressureLeft  = x ? sim_pressure_at(ctx, x - 1, y) : pressureRight;
+      ctx->demo->velocitiesX[y * (width + 1) + x] -= k * (pressureRight - pressureLeft);
+    }
+  }
+
+  // Vertical.
+  for (u32 y = 0; y != (height + 1); ++y) {
+    for (u32 x = 0; x != width; ++x) {
+      if (sim_solid_test(ctx, x, y) || (y && sim_solid_test(ctx, x, y - 1))) {
+        continue;
+      }
+      const f32 pressureTop    = sim_pressure_at(ctx, x, y);
+      const f32 pressureBottom = y ? sim_pressure_at(ctx, x, y - 1) : pressureTop;
+      ctx->demo->velocitiesY[y * width + x] -= k * (pressureTop - pressureBottom);
+    }
+  }
+}
+
 static void sim_update(DemoUpdateContext* ctx) {
   for (u32 i = 0; i != ctx->demo->solverIterations; ++i) {
     sim_solve_pressure(ctx);
   }
+  sim_update_velocities(ctx);
 }
 
 static void sim_draw(DemoUpdateContext* ctx) {
