@@ -135,6 +135,9 @@ static void sim_solid_flip(DemoUpdateContext* ctx, const u32 x, const u32 y) {
 }
 
 static f32 sim_pressure(DemoUpdateContext* ctx, const u32 x, const u32 y) {
+  if (sim_solid(ctx, x, y)) {
+    return 0.0f;
+  }
   const u32 width = ctx->demo->simWidth;
   return ctx->demo->pressure[y * width + x];
 }
@@ -496,8 +499,8 @@ static void sim_draw(DemoUpdateContext* ctx) {
       } else if (status == UiStatus_ActivatedAlt) {
         sim_smoke_emit(ctx, x, y, 5);
       }
-      if (status == UiStatus_Hovered) {
-        sim_push(ctx, x, y, 500.0f * ctx->dt);
+      if (status == UiStatus_Hovered && gap_window_key_down(ctx->winComp, GapKey_Tab)) {
+        sim_push(ctx, x, y, 1000.0f * ctx->dt);
       }
 
       ui_style_color(ctx->winCanvas, ui_color_white);
