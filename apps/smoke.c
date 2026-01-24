@@ -7,6 +7,7 @@
 #include "cli/validate.h"
 #include "core/diag.h"
 #include "core/file.h"
+#include "core/math.h"
 #include "core/version.h"
 #include "ecs/entity.h"
 #include "ecs/utils.h"
@@ -27,6 +28,7 @@
 
 ecs_comp_define(DemoComp) {
   EcsEntityId window;
+  TimeSteady  lastTime;
 
   u32 simWidth, simHeight;
 };
@@ -50,12 +52,18 @@ static EcsEntityId demo_window_create(EcsWorld* world, const u16 width, const u1
 typedef struct {
   EcsWorld* world;
   DemoComp* demo;
+  f32       dt; // In seconds.
 
   EcsEntityId     winEntity;
   DemoWindowComp* winDemo;
   GapWindowComp*  winComp;
   UiCanvasComp*   winCanvas;
 } DemoUpdateContext;
+
+static f32 sim_time_to_seconds(const TimeDuration dur) {
+  static const f64 g_toSecMul = 1.0 / (f64)time_second;
+  return (f32)((f64)dur * g_toSecMul);
+}
 
 static void sim_update(DemoUpdateContext* ctx) { (void)ctx; }
 
@@ -115,6 +123,14 @@ ecs_system_define(DemoUpdateSys) {
       .world = world,
       .demo  = ecs_view_write_t(globalItr, DemoComp),
   };
+
+  const TimeSteady timeNew   = time_steady_clock();
+  TimeDuration     timeDelta = 0;
+  if (ctx.demo->lastTime) {
+    timeDelta = time_steady_duration(ctx.demo->lastTime, timeNew);
+    timeDelta = math_min(timeDelta, time_second); // Avoid huge delta's when process was paused.
+  }
+  ctx.dt = sim_time_to_seconds(timeDelta);
 
   EcsIterator* canvasItr = ecs_view_itr(ecs_world_view_t(world, UiCanvasView));
   EcsIterator* winItr    = ecs_view_maybe_at(ecs_world_view_t(world, WindowView), ctx.demo->window);
@@ -247,6 +263,7 @@ bool app_ecs_init(EcsWorld* world, const CliInvocation* invoc) {
 
   ecs_world_add_t(
       world, ecs_world_global(world), DemoComp, .window = window, .simWidth = 50, .simHeight = 50);
+
   return true; // Initialization succeeded.
 }
 
