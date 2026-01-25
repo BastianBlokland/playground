@@ -18,6 +18,7 @@
 #include "ecs/utils.h"
 #include "ecs/view.h"
 #include "gap/error.h"
+#include "gap/input.h"
 #include "gap/register.h"
 #include "gap/window.h"
 #include "log/logger.h"
@@ -69,8 +70,8 @@ static DemoComp* demo_create(EcsWorld* world) {
       .solverIterations = 32,
       .velDiffusion     = 0.25f,
       .density          = 1.0f,
-      .simWidth         = 20,
-      .simHeight        = 20);
+      .simWidth         = 15,
+      .simHeight        = 15);
 
   const u32 width  = demo->simWidth;
   const u32 height = demo->simHeight;
@@ -335,9 +336,12 @@ static void sim_smoke_advect(DemoUpdateContext* ctx) {
       mem_create(smoke, sizeof(f32) * height * width));
 }
 
-static void sim_push(DemoUpdateContext* ctx, const u32 x, const u32 y, const f32 force) {
-  ctx->demo->velocitiesY[y * ctx->demo->simWidth + x] += force;
-  ctx->demo->velocitiesX[y * (ctx->demo->simWidth + 1) + x] += force;
+static void
+sim_push(DemoUpdateContext* ctx, const u32 x, const u32 y, const f32 forceX, const f32 forceY) {
+  ctx->demo->velocitiesY[y * ctx->demo->simWidth + x] += forceY;             // Bottom.
+  ctx->demo->velocitiesY[(y + 1) * ctx->demo->simWidth + x] -= forceY;       // Top.
+  ctx->demo->velocitiesX[y * (ctx->demo->simWidth + 1) + x] += forceX;       // Left.
+  ctx->demo->velocitiesX[y * (ctx->demo->simWidth + 1) + (x + 1)] -= forceX; // Right.
 }
 
 static f32 sim_velocity_divergence(DemoUpdateContext* ctx, const u32 x, const u32 y) {
@@ -555,7 +559,9 @@ static void sim_draw(DemoUpdateContext* ctx) {
         sim_smoke_emit(ctx, x, y, 5);
       }
       if (status == UiStatus_Hovered && gap_window_key_down(ctx->winComp, GapKey_Tab)) {
-        sim_push(ctx, x, y, 1000.0f * ctx->dt);
+        const GapVector cursorDelta = gap_window_param(ctx->winComp, GapParam_CursorDelta);
+        const f32       forceMul    = 100.0f;
+        sim_push(ctx, x, y, cursorDelta.x * forceMul * ctx->dt, cursorDelta.y * forceMul * ctx->dt);
       }
 
       {
