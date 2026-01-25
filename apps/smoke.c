@@ -232,6 +232,10 @@ static void sim_velocity_diffuse(DemoUpdateContext* ctx) {
   const u32 width  = ctx->demo->simWidth;
   const u32 height = ctx->demo->simHeight;
 
+  if (ctx->demo->velDiffusion < f32_epsilon) {
+    return;
+  }
+
   // Horizontal.
   for (u32 y = 0; y != height; ++y) {
     for (u32 x = 0; x != (width + 1); ++x) {
