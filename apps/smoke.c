@@ -43,10 +43,11 @@ ecs_comp_define(DemoComp) {
   EcsEntityId window;
   TimeSteady  lastTime;
 
-  f32 targetX, targetY;
+  u32 targetX, targetY;
   f32 dirX, dirY;
 
   bool   solve;
+  bool   push;
   bool   updateVelocities;
   u32    solverIterations;
   f32    velDiffusion;
@@ -234,6 +235,28 @@ static f32 sim_sample(const f32* v, const u32 width, const u32 height, const f32
   return math_lerp(vBottom, vTop, yFrac);
 }
 
+static bool sim_pushed(DemoUpdateContext* ctx, const u32 x, const u32 y) {
+  if (!ctx->demo->push) {
+    return false;
+  }
+  if (x == ctx->demo->targetX && y == ctx->demo->targetY) {
+    return true;
+  }
+  if (x == (ctx->demo->targetX + 1) && y == ctx->demo->targetY) {
+    return true;
+  }
+  if (x == (ctx->demo->targetX - 1) && y == ctx->demo->targetY) {
+    return true;
+  }
+  if (x == ctx->demo->targetX && (y + 1) == ctx->demo->targetY) {
+    return true;
+  }
+  if (x == ctx->demo->targetX && (y - 1) == ctx->demo->targetY) {
+    return true;
+  }
+  return false;
+}
+
 static void sim_velocity_diffuse(DemoUpdateContext* ctx) {
   const u32 width  = ctx->demo->simWidth;
   const u32 height = ctx->demo->simHeight;
@@ -390,7 +413,7 @@ static void sim_smoke_advect(DemoUpdateContext* ctx) {
 
   for (u32 y = 0; y != height; ++y) {
     for (u32 x = 0; x != width; ++x) {
-      if (sim_solid(ctx, x, y)) {
+      if (sim_solid(ctx, x, y) || sim_pushed(ctx, x, y)) {
         smoke[y * width + x] = 0.0f;
         continue;
       }
@@ -471,7 +494,9 @@ static void sim_solve_pressure(DemoUpdateContext* ctx) {
       const u8   flowCount  = flowLeft + flowRight + flowTop + flowBottom;
 
       f32 newPressure;
-      if (sim_solid(ctx, x, y) || !flowCount) {
+      if (sim_pushed(ctx, x, y)) {
+        newPressure = 500;
+      } else if (sim_solid(ctx, x, y) || !flowCount) {
         newPressure = 0.0f;
       } else {
         const f32 pressureTop    = y != yMax ? (sim_pressure(ctx, x, y + 1) * flowTop) : 0.0f;
@@ -680,6 +705,8 @@ static void sim_draw(DemoUpdateContext* ctx) {
         log_param("y", fmt_float(ctx->demo->dirY)));
   }
 
+  ctx->demo->push = false;
+
   ui_layout_resize(ctx->winCanvas, UiAlign_BottomLeft, cellSize, UiBase_Absolute, Ui_XY);
   for (u32 y = 0; y != simHeight; ++y) {
     for (u32 x = 0; x != simWidth; ++x) {
@@ -725,15 +752,16 @@ static void sim_draw(DemoUpdateContext* ctx) {
         if (gap_window_key_down(ctx->winComp, GapKey_Tab)) {
           sim_solid_set(ctx, x, y);
         }
-        if (gap_window_key_down(ctx->winComp, GapKey_Control)) {
-          const f32 forceMul = 1000.0f;
-          sim_push(
-              ctx,
-              x,
-              y,
-              ctx->demo->dirX * forceMul * ctx->dt,
-              ctx->demo->dirY * forceMul * ctx->dt);
-        }
+        ctx->demo->push = gap_window_key_down(ctx->winComp, GapKey_Control);
+        // if (gap_window_key_down(ctx->winComp, GapKey_Control)) {
+        //   const f32 forceMul = 1000.0f;
+        //   sim_push(
+        //       ctx,
+        //       x,
+        //       y,
+        //       ctx->demo->dirX * forceMul * ctx->dt,
+        //       ctx->demo->dirY * forceMul * ctx->dt);
+        // }
       }
 
       {
