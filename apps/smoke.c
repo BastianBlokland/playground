@@ -263,8 +263,9 @@ static void sim_velocity_advect(DemoUpdateContext* ctx) {
   // Horizontal.
   for (u32 y = 0; y != height; ++y) {
     for (u32 x = 0; x != (width + 1); ++x) {
-      if (sim_solid(ctx, x, y) || (x && sim_solid(ctx, x - 1, y))) {
-        velocitiesX[y * (width + 1) + x] = 0.0f;
+      // Check if either the left or the right cell is solid.
+      if ((x && sim_solid(ctx, x - 1, y)) || (x != width && sim_solid(ctx, x, y))) {
+        velocitiesX[y * (width + 1) + x] = ctx->demo->velocitiesX[y * (width + 1) + x];
         continue;
       }
       const f32 velX = ctx->demo->velocitiesX[y * (width + 1) + x];
@@ -282,8 +283,9 @@ static void sim_velocity_advect(DemoUpdateContext* ctx) {
   // Vertical.
   for (u32 y = 0; y != (height + 1); ++y) {
     for (u32 x = 0; x != width; ++x) {
-      if (sim_solid(ctx, x, y) || (y && sim_solid(ctx, x, y - 1))) {
-        velocitiesY[y * width + x] = 0.0f;
+      // Check if either the top or the bottom cell is solid.
+      if ((y && sim_solid(ctx, x, y - 1)) || (y != height && sim_solid(ctx, x, y))) {
+        velocitiesY[y * width + x] = ctx->demo->velocitiesY[y * width + x];
         continue;
       }
       const f32 velX = sim_sample(ctx->demo->velocitiesX, width + 1, height, x + 0.5f, y);
@@ -410,7 +412,8 @@ static void sim_velocity_update(DemoUpdateContext* ctx) {
   // Horizontal.
   for (u32 y = 0; y != height; ++y) {
     for (u32 x = 0; x != (width + 1); ++x) {
-      if (sim_solid(ctx, x, y) || (x && sim_solid(ctx, x - 1, y))) {
+      // Check if either the left or the right cell is solid.
+      if ((x && sim_solid(ctx, x - 1, y)) || (x != width && sim_solid(ctx, x, y))) {
         ctx->demo->velocitiesX[y * (width + 1) + x] = 0;
         continue;
       }
@@ -423,7 +426,8 @@ static void sim_velocity_update(DemoUpdateContext* ctx) {
   // Vertical.
   for (u32 y = 0; y != (height + 1); ++y) {
     for (u32 x = 0; x != width; ++x) {
-      if (sim_solid(ctx, x, y) || (y && sim_solid(ctx, x, y - 1))) {
+      // Check if either the top or the bottom cell is solid.
+      if ((y && sim_solid(ctx, x, y - 1)) || (y != height && sim_solid(ctx, x, y))) {
         ctx->demo->velocitiesY[y * width + x] = 0;
         continue;
       }
