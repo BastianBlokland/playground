@@ -396,7 +396,7 @@ static void sim_solve_pressure(DemoUpdateContext* ctx) {
     return;
   }
 
-  const f32 pressureDecay = 1.0f;
+  const f32 pressureDecay = ctx->demo->density * 1.0f;
 
   const u32 xMax = width - 1;
   const u32 yMax = height - 1;
