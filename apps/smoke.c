@@ -39,6 +39,152 @@
  * Reference: https://www.youtube.com/watch?v=Q78wvrQ9xsU
  */
 
+typedef struct {
+  i32 x, y;
+} SimCoord;
+
+typedef struct {
+  f32 x, y;
+} SimCoordFrac;
+
+static SimCoord sim_coord_round_down(const SimCoordFrac c) {
+  return (SimCoord){
+      .x = (i32)math_round_down_f32(c.x),
+      .y = (i32)math_round_down_f32(c.y),
+  };
+}
+
+typedef struct {
+  u32  width, height;
+  f32* values;
+} SimGrid;
+
+static SimGrid sim_grid_create(const u32 width, const u32 height) {
+  return (SimGrid){
+      .width  = width,
+      .height = height,
+      .values = alloc_array_t(g_allocHeap, f32, height * width),
+  };
+}
+
+static void sim_grid_destroy(SimGrid* g) {
+  alloc_free_array_t(g_allocHeap, g->values, g->height * g->width);
+}
+
+static u32 sim_grid_count(const SimGrid* g) { return g->height * g->width; }
+
+static void sim_grid_clear(SimGrid* g) {
+  mem_set(mem_create(g->values, sim_grid_count(g) * sizeof(f32)), 0);
+}
+
+static void sim_grid_fill(SimGrid* g, const f32 v) {
+  const u32 count = sim_grid_count(g);
+  for (u32 i = 0; i != count; ++i) {
+    g->values[i] = v;
+  }
+}
+
+static void sim_grid_rand(SimGrid* g, const f32 min, const f32 max) {
+  const u32 count = sim_grid_count(g);
+  for (u32 i = 0; i != count; ++i) {
+    g->values[i] = rng_sample_range(g_rng, min, max);
+  }
+}
+
+static f32 sim_grid_sum(const SimGrid* g) {
+  const u32 count  = sim_grid_count(g);
+  f32       result = 0;
+  for (u32 i = 0; i != count; ++i) {
+    result += g->values[i];
+  }
+  return result;
+}
+
+static bool sim_grid_valid(const SimGrid* g, const SimCoord c) {
+  if (c.x < 0 || c.x > (i32)g->width) {
+    return false;
+  }
+  if (c.y < 0 || c.y > (i32)g->height) {
+    return false;
+  }
+  return true;
+}
+
+static u32 sim_grid_index(const SimGrid* g, const SimCoord c) {
+  diag_assert(sim_grid_valid(g, c));
+  return c.y * g->width + c.x;
+}
+
+static f32 sim_grid_get(const SimGrid* g, const SimCoord c) {
+  return g->values[sim_grid_index(g, c)];
+}
+
+static f32 sim_grid_get_bounded(const SimGrid* g, const SimCoord c, const f32 fallback) {
+  return sim_grid_valid(g, c) ? sim_grid_get(g, c) : fallback;
+}
+
+static f32 sim_grid_sample(const SimGrid* g, const SimCoordFrac c, const f32 fallback) {
+  const SimCoord cI = sim_coord_round_down(c);
+
+  const SimCoord c00 = {cI.x, cI.y};
+  const SimCoord c10 = {cI.x + 1, cI.y};
+  const SimCoord c01 = {cI.x, cI.y + 1};
+  const SimCoord c11 = {cI.x + 1, cI.y + 1};
+
+  const f32 v00 = sim_grid_get_bounded(g, c00, fallback);
+  const f32 v10 = sim_grid_get_bounded(g, c10, fallback);
+  const f32 v01 = sim_grid_get_bounded(g, c01, fallback);
+  const f32 v11 = sim_grid_get_bounded(g, c11, fallback);
+
+  const f32 fracX = c.x - (f32)cI.x;
+  const f32 fracY = c.y - (f32)cI.y;
+
+  const f32 x0 = math_lerp(v00, v10, fracX);
+  const f32 x1 = math_lerp(v01, v11, fracX);
+
+  return math_lerp(x0, x1, fracY);
+}
+
+typedef struct {
+  u32 width, height;
+
+  // NOTE: Velocities are stored at the edges, not the cell centers.
+  SimGrid velocitiesX; // (width + 1) height
+  SimGrid velocitiesY; // width * (height + 1)
+
+  SimGrid pressure;
+  SimGrid smoke;
+  BitSet  solid;
+} SimState;
+
+static SimState sim_state_create(const u32 width, const u32 height) {
+  SimState s = {
+      .width       = width,
+      .height      = height,
+      .velocitiesX = sim_grid_create(width + 1, height),
+      .velocitiesY = sim_grid_create(width, height + 1),
+      .pressure    = sim_grid_create(width, height),
+      .smoke       = sim_grid_create(width, height),
+      .solid       = alloc_alloc(g_allocHeap, bits_to_bytes(height * width) + 1, 1),
+  };
+
+  sim_grid_clear(&s.velocitiesX);
+  sim_grid_clear(&s.velocitiesY);
+  sim_grid_clear(&s.pressure);
+  sim_grid_clear(&s.smoke);
+  mem_set(s.solid, 0);
+
+  return s;
+}
+
+static void sim_state_destroy(SimState* s) {
+  sim_grid_destroy(&s->velocitiesX);
+  sim_grid_destroy(&s->velocitiesY);
+  sim_grid_destroy(&s->pressure);
+  sim_grid_destroy(&s->smoke);
+  alloc_free(g_allocHeap, s->solid);
+}
+
 ecs_comp_define(DemoComp) {
   EcsEntityId window;
   TimeSteady  lastTime;
