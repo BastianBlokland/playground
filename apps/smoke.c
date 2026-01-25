@@ -44,11 +44,14 @@ ecs_comp_define(DemoComp) {
   TimeSteady  lastTime;
 
   f32 targetX, targetY;
+  f32 dirX, dirY;
 
   bool   solve;
   bool   updateVelocities;
   u32    solverIterations;
   f32    velDiffusion;
+  f32    smokeDiffusion;
+  f32    smokeDecay;
   f32    density;
   u32    simWidth, simHeight;
   f32*   velocitiesX; // f32[simHeight * (simWidth + 1)]
@@ -71,9 +74,12 @@ static DemoComp* demo_create(EcsWorld* world) {
       .updateVelocities = true,
       .targetX          = 12,
       .targetY          = 12,
+      .dirY             = 1.0f,
       .solverIterations = 32,
-      .velDiffusion     = 0.25f,
-      .density          = 1.0f,
+      .velDiffusion     = 0.5f,
+      .smokeDiffusion   = 0.05f,
+      .smokeDecay       = 0.01f,
+      .density          = 10.0f,
       .simWidth         = 25,
       .simHeight        = 25);
 
@@ -267,6 +273,33 @@ static void sim_velocity_diffuse(DemoUpdateContext* ctx) {
   }
 }
 
+static void sim_smoke_diffuse(DemoUpdateContext* ctx) {
+  const u32 width  = ctx->demo->simWidth;
+  const u32 height = ctx->demo->simHeight;
+
+  if (ctx->demo->smokeDiffusion < f32_epsilon) {
+    return;
+  }
+
+  for (u32 y = 0; y != height; ++y) {
+    for (u32 x = 0; x != width; ++x) {
+      if (sim_solid(ctx, x, y)) {
+        continue;
+      }
+      const f32 smokeCenter = ctx->demo->smoke[y * width + x];
+      const f32 smokeTop    = (y + 1) != height ? ctx->demo->smoke[(y + 1) * width + x] : 0;
+      const f32 smokeLeft   = x ? ctx->demo->smoke[y * width + (x - 1)] : 0;
+      const f32 smokeRight  = (x + 1) != width ? ctx->demo->smoke[y * width + (x + 1)] : 0;
+      const f32 smokeBottom = y ? ctx->demo->smoke[(y - 1) * width + x] : 0;
+
+      const f32 laplacian = smokeLeft + smokeRight + smokeTop + smokeBottom - 4 * smokeCenter;
+
+      const f32 smokeNew = smokeCenter + ctx->demo->smokeDiffusion * ctx->dt * laplacian;
+      ctx->demo->smoke[y * width + x] = smokeNew * math_exp_f32(-ctx->dt * ctx->demo->smokeDecay);
+    }
+  }
+}
+
 static void sim_smoke_coalesce(DemoUpdateContext* ctx) {
   const u32 width  = ctx->demo->simWidth;
   const u32 height = ctx->demo->simHeight;
@@ -423,7 +456,7 @@ static void sim_solve_pressure(DemoUpdateContext* ctx) {
     return;
   }
 
-  const f32 pressureDecay = ctx->demo->density * 1.0f;
+  const f32 pressureDecay = ctx->demo->density * 0.5f;
 
   const u32 xMax = width - 1;
   const u32 yMax = height - 1;
@@ -502,7 +535,7 @@ static void sim_smoke_pull(DemoUpdateContext* ctx) {
   const u32 width  = ctx->demo->simWidth;
   const u32 height = ctx->demo->simHeight;
 
-  const f32 force = 500.0f;
+  const f32 force = 5.0f;
 
   // Horizontal.
   for (u32 y = 0; y != height; ++y) {
@@ -516,8 +549,11 @@ static void sim_smoke_pull(DemoUpdateContext* ctx) {
       if (distSqr < f32_epsilon) {
         continue;
       }
-      const f32 dist     = intrinsic_sqrt_f32(distSqr);
-      const f32 forceMul = smoke * smoke;
+      const f32 dist         = intrinsic_sqrt_f32(distSqr);
+      const f32 smokeClamped = math_clamp_f32(smoke, 0.0f, 1.0f);
+      // TODO: This is very arbitrary to avoid scaling the force very high if the smoke is very
+      // concentrated.
+      const f32 forceMul = 1.0f - math_pow_f32(1.0f - smokeClamped, 3.0f);
       ctx->demo->velocitiesX[y * (width + 1) + x] += (dX / dist) * force * ctx->dt * forceMul;
     }
   }
@@ -534,8 +570,9 @@ static void sim_smoke_pull(DemoUpdateContext* ctx) {
       if (distSqr < f32_epsilon) {
         continue;
       }
-      const f32 dist     = intrinsic_sqrt_f32(distSqr);
-      const f32 forceMul = smoke * smoke;
+      const f32 dist         = intrinsic_sqrt_f32(distSqr);
+      const f32 smokeClamped = math_clamp_f32(smoke, 0.0f, 1.0f);
+      const f32 forceMul     = 1.0f - math_pow_f32(1.0f - smokeClamped, 3.0f);
       ctx->demo->velocitiesY[y * width + x] += (dY / dist) * force * ctx->dt * forceMul;
     }
   }
@@ -543,11 +580,11 @@ static void sim_smoke_pull(DemoUpdateContext* ctx) {
 
 static void sim_update(DemoUpdateContext* ctx) {
   const f32 smokeAmount = sim_smoke_count(ctx);
-  if (smokeAmount < 25.0f) {
-    sim_smoke_emit(ctx, 4, 3, 2.0f * ctx->dt);
-    // sim_push(ctx, 4, 3, 0, 1000.0f * ctx->dt);
-    // sim_smoke_emit(ctx, 10, 3, 2.0f * ctx->dt);
-    // sim_push(ctx, 10, 3, 0, 1000.0f * ctx->dt);
+  if (smokeAmount < 350.0f) {
+    sim_smoke_emit(ctx, 4, 3, 25.0f * ctx->dt);
+    //  sim_push(ctx, 4, 3, 0, 1000.0f * ctx->dt);
+    //  sim_smoke_emit(ctx, 10, 3, 2.0f * ctx->dt);
+    //  sim_push(ctx, 10, 3, 0, 1000.0f * ctx->dt);
   }
   // log_i("Update", log_param("smoke", fmt_float(smokeAmount)));
 
@@ -555,6 +592,7 @@ static void sim_update(DemoUpdateContext* ctx) {
   // sim_smoke_coalesce(ctx);
   sim_smoke_pull(ctx);
   sim_velocity_diffuse(ctx);
+  sim_smoke_diffuse(ctx);
   sim_smoke_advect(ctx);
   sim_velocity_advect(ctx);
   if (ctx->demo->solve) {
@@ -630,6 +668,18 @@ static void sim_draw(DemoUpdateContext* ctx) {
       canvasSize.height * 0.5f - simHeight * cellSize.height * 0.5f,
   };
 
+  const GapVector cursorDelta = gap_window_param(ctx->winComp, GapParam_CursorDelta);
+  const f32       distSqr     = cursorDelta.x * cursorDelta.x + cursorDelta.y * cursorDelta.y;
+  if (distSqr > f32_epsilon) {
+    const f32 dist  = intrinsic_sqrt_f32(distSqr);
+    ctx->demo->dirX = cursorDelta.x / dist;
+    ctx->demo->dirY = cursorDelta.y / dist;
+    log_i(
+        "Dir",
+        log_param("x", fmt_float(ctx->demo->dirX)),
+        log_param("y", fmt_float(ctx->demo->dirY)));
+  }
+
   ui_layout_resize(ctx->winCanvas, UiAlign_BottomLeft, cellSize, UiBase_Absolute, Ui_XY);
   for (u32 y = 0; y != simHeight; ++y) {
     for (u32 x = 0; x != simWidth; ++x) {
@@ -667,18 +717,22 @@ static void sim_draw(DemoUpdateContext* ctx) {
       if (status == UiStatus_Activated) {
         sim_solid_flip(ctx, x, y);
       } else if (status == UiStatus_ActivatedAlt) {
-        sim_smoke_emit(ctx, x, y, 5);
       }
       if (status == UiStatus_Hovered /* && gap_window_key_down(ctx->winComp, GapKey_Tab) */) {
-        // const GapVector cursorDelta = gap_window_param(ctx->winComp, GapParam_CursorDelta);
-        // const f32       forceMul    = 100.0f;
-        // sim_push(ctx, x, y, cursorDelta.x * forceMul * ctx->dt, cursorDelta.y * forceMul *
-        // ctx->dt);
         ctx->demo->targetX = x;
         ctx->demo->targetY = y;
 
         if (gap_window_key_down(ctx->winComp, GapKey_Tab)) {
           sim_solid_set(ctx, x, y);
+        }
+        if (gap_window_key_down(ctx->winComp, GapKey_Control)) {
+          const f32 forceMul = 1000.0f;
+          sim_push(
+              ctx,
+              x,
+              y,
+              ctx->demo->dirX * forceMul * ctx->dt,
+              ctx->demo->dirY * forceMul * ctx->dt);
         }
       }
 
@@ -817,6 +871,10 @@ static void demo_draw_menu(const DemoUpdateContext* ctx) {
   demo_draw_numbox_f32(ctx, string_lit("Density"), &ctx->demo->density);
   ui_layout_next(ctx->winCanvas, Ui_Up, spacing.y);
   demo_draw_numbox_f32(ctx, string_lit("Velocity diff"), &ctx->demo->velDiffusion);
+  ui_layout_next(ctx->winCanvas, Ui_Up, spacing.y);
+  demo_draw_numbox_f32(ctx, string_lit("Smoke diff"), &ctx->demo->smokeDiffusion);
+  ui_layout_next(ctx->winCanvas, Ui_Up, spacing.y);
+  demo_draw_numbox_f32(ctx, string_lit("Smoke decay"), &ctx->demo->smokeDecay);
   ui_layout_next(ctx->winCanvas, Ui_Up, spacing.y);
   demo_draw_numbox_u32(ctx, string_lit("Solver itrs"), &ctx->demo->solverIterations);
 }
