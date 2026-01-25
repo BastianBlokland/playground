@@ -170,6 +170,7 @@ UiId ui_canvas_draw_text_editor(UiCanvasComp*, u16 fontSize, UiAlign, UiFlags);
 void   ui_canvas_text_editor_start(UiCanvasComp*, String text, usize maxLen, UiId, UiTextFilter);
 void   ui_canvas_text_editor_stop(UiCanvasComp*);
 bool   ui_canvas_text_editor_active(const UiCanvasComp*, UiId);
+bool   ui_canvas_text_editor_active_any(const UiCanvasComp*);
 String ui_canvas_text_editor_result(UiCanvasComp*);
 
 /**

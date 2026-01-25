@@ -902,6 +902,10 @@ bool ui_canvas_text_editor_active(const UiCanvasComp* comp, const UiId id) {
   return ui_editor_active(comp->textEditor) && ui_editor_element(comp->textEditor) == id;
 }
 
+bool ui_canvas_text_editor_active_any(const UiCanvasComp* comp) {
+  return ui_editor_active(comp->textEditor);
+}
+
 String ui_canvas_text_editor_result(UiCanvasComp* comp) {
   return ui_editor_result_text(comp->textEditor);
 }
