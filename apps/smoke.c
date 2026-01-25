@@ -32,6 +32,12 @@
 #include "ui/style.h"
 #include "ui/widget.h"
 
+/**
+ * Semi-Lagrangian fluid simulation.
+ * Reference: https://www.cs.ubc.ca/~rbridson/fluidsimulation/fluids_notes.pdf
+ * Reference: https://www.youtube.com/watch?v=Q78wvrQ9xsU
+ */
+
 ecs_comp_define(DemoComp) {
   EcsEntityId window;
   TimeSteady  lastTime;
