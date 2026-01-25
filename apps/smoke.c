@@ -70,8 +70,8 @@ static DemoComp* demo_create(EcsWorld* world) {
       .solverIterations = 32,
       .velDiffusion     = 0.25f,
       .density          = 1.0f,
-      .simWidth         = 15,
-      .simHeight        = 15);
+      .simWidth         = 25,
+      .simHeight        = 25);
 
   const u32 width  = demo->simWidth;
   const u32 height = demo->simHeight;
@@ -443,6 +443,11 @@ static void sim_velocity_update(DemoUpdateContext* ctx) {
 }
 
 static void sim_update(DemoUpdateContext* ctx) {
+  sim_smoke_emit(ctx, 4, 3, 2.0f * ctx->dt);
+  sim_push(ctx, 4, 3, 0, 1000.0f * ctx->dt);
+  sim_smoke_emit(ctx, 10, 3, 2.0f * ctx->dt);
+  sim_push(ctx, 10, 3, 0, 1000.0f * ctx->dt);
+
   sim_velocity_diffuse(ctx);
   sim_smoke_advect(ctx);
   sim_velocity_advect(ctx);
@@ -513,7 +518,7 @@ static void sim_draw(DemoUpdateContext* ctx) {
   const u32 simHeight = ctx->demo->simHeight;
 
   const UiVector canvasSize = ui_canvas_resolution(ctx->winCanvas);
-  const UiVector cellSize   = ui_vector(50, 50);
+  const UiVector cellSize   = ui_vector(40, 40);
   const UiVector cellOrg    = {
       canvasSize.width * 0.5f - simWidth * cellSize.width * 0.5f,
       canvasSize.height * 0.5f - simHeight * cellSize.height * 0.5f,
@@ -659,22 +664,33 @@ static void demo_draw_menu_frame(const DemoUpdateContext* ctx) {
   ui_style_pop(ctx->winCanvas);
 }
 
-static void demo_draw_menu_numbox(const DemoUpdateContext* ctx, const String label, f32* value) {
+static void demo_draw_numbox_f32(const DemoUpdateContext* ctx, const String label, f32* value) {
   demo_draw_menu_frame(ctx);
-
   ui_layout_push(ctx->winCanvas);
   static const UiVector g_frameInset = {-30, -20};
   ui_layout_grow(ctx->winCanvas, UiAlign_MiddleCenter, g_frameInset, UiBase_Absolute, Ui_XY);
   ui_label(ctx->winCanvas, label);
-
   ui_layout_inner(
       ctx->winCanvas, UiBase_Current, UiAlign_MiddleRight, ui_vector(0.5f, 1), UiBase_Current);
-
   f64 val = *value;
   if (ui_numbox(ctx->winCanvas, &val)) {
     *value = (f32)val;
   }
+  ui_layout_pop(ctx->winCanvas);
+}
 
+static void demo_draw_numbox_u32(const DemoUpdateContext* ctx, const String label, u32* value) {
+  demo_draw_menu_frame(ctx);
+  ui_layout_push(ctx->winCanvas);
+  static const UiVector g_frameInset = {-30, -20};
+  ui_layout_grow(ctx->winCanvas, UiAlign_MiddleCenter, g_frameInset, UiBase_Absolute, Ui_XY);
+  ui_label(ctx->winCanvas, label);
+  ui_layout_inner(
+      ctx->winCanvas, UiBase_Current, UiAlign_MiddleRight, ui_vector(0.5f, 1), UiBase_Current);
+  f64 val = *value;
+  if (ui_numbox(ctx->winCanvas, &val, .step = 1.0)) {
+    *value = (u32)val;
+  }
   ui_layout_pop(ctx->winCanvas);
 }
 
@@ -685,9 +701,11 @@ static void demo_draw_menu(const DemoUpdateContext* ctx) {
   ui_layout_inner(ctx->winCanvas, UiBase_Canvas, UiAlign_BottomLeft, size, UiBase_Absolute);
   ui_layout_move(ctx->winCanvas, ui_vector(spacing.x, spacing.y), UiBase_Absolute, Ui_XY);
 
-  demo_draw_menu_numbox(ctx, string_lit("Density"), &ctx->demo->density);
+  demo_draw_numbox_f32(ctx, string_lit("Density"), &ctx->demo->density);
   ui_layout_next(ctx->winCanvas, Ui_Up, spacing.y);
-  demo_draw_menu_numbox(ctx, string_lit("Velocity Diff"), &ctx->demo->velDiffusion);
+  demo_draw_numbox_f32(ctx, string_lit("Velocity diff"), &ctx->demo->velDiffusion);
+  ui_layout_next(ctx->winCanvas, Ui_Up, spacing.y);
+  demo_draw_numbox_u32(ctx, string_lit("Solver itrs"), &ctx->demo->solverIterations);
 }
 
 ecs_view_define(FrameUpdateView) { ecs_access_write(RendSettingsGlobalComp); }
@@ -743,29 +761,31 @@ ecs_system_define(DemoUpdateSys) {
       gap_window_close(ctx.winComp);
     }
 
-    if (gap_window_key_pressed(ctx.winComp, GapKey_Alpha1)) {
-      ctx.demo->solve ^= true;
-    }
-    if (gap_window_key_pressed(ctx.winComp, GapKey_Alpha2)) {
-      ctx.demo->updateVelocities ^= true;
-    }
-    if (gap_window_key_pressed(ctx.winComp, GapKey_Alpha3)) {
-      sim_velocity_randomize(&ctx);
-    }
-    if (gap_window_key_pressed(ctx.winComp, GapKey_Alpha4)) {
-      sim_velocity_clear(&ctx);
-    }
-    if (gap_window_key_pressed(ctx.winComp, GapKey_Alpha5)) {
-      sim_pressure_clear(&ctx);
-    }
-    if (gap_window_key_pressed(ctx.winComp, GapKey_Alpha6)) {
-      sim_solid_set_border(&ctx);
-    }
-
     if (ecs_view_maybe_jump(canvasItr, ctx.winDemo->uiCanvas)) {
       ctx.winCanvas = ecs_view_write_t(canvasItr, UiCanvasComp);
       ui_canvas_reset(ctx.winCanvas);
     }
+
+    const bool textEditor = ctx.winCanvas && ui_canvas_text_editor_active_any(ctx.winCanvas);
+    if (!textEditor && gap_window_key_pressed(ctx.winComp, GapKey_Alpha1)) {
+      ctx.demo->solve ^= true;
+    }
+    if (!textEditor && gap_window_key_pressed(ctx.winComp, GapKey_Alpha2)) {
+      ctx.demo->updateVelocities ^= true;
+    }
+    if (!textEditor && gap_window_key_pressed(ctx.winComp, GapKey_Alpha3)) {
+      sim_velocity_randomize(&ctx);
+    }
+    if (!textEditor && gap_window_key_pressed(ctx.winComp, GapKey_Alpha4)) {
+      sim_velocity_clear(&ctx);
+    }
+    if (!textEditor && gap_window_key_pressed(ctx.winComp, GapKey_Alpha5)) {
+      sim_pressure_clear(&ctx);
+    }
+    if (!textEditor && gap_window_key_pressed(ctx.winComp, GapKey_Alpha6)) {
+      sim_solid_set_border(&ctx);
+    }
+
     if (ctx.dt > f32_epsilon) {
       sim_update(&ctx);
     }
@@ -869,8 +889,8 @@ bool app_ecs_init(EcsWorld* world, const CliInvocation* invoc) {
   rend_settings_global_init(world, false /* devSupport */);
   ui_settings_global_init(world);
 
-  const u16 windowWidth  = (u16)cli_read_u64(invoc, g_optWidth, 1200);
-  const u16 windowHeight = (u16)cli_read_u64(invoc, g_optHeight, 1200);
+  const u16 windowWidth  = (u16)cli_read_u64(invoc, g_optWidth, 1600);
+  const u16 windowHeight = (u16)cli_read_u64(invoc, g_optHeight, 1600);
 
   DemoComp* demo = demo_create(world);
 
