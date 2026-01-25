@@ -267,6 +267,33 @@ static void sim_velocity_diffuse(DemoUpdateContext* ctx) {
   }
 }
 
+static void sim_smoke_coalesce(DemoUpdateContext* ctx) {
+  const u32 width  = ctx->demo->simWidth;
+  const u32 height = ctx->demo->simHeight;
+
+  const f32 k = 100.0f * ctx->dt;
+
+  // Horizontal.
+  for (u32 y = 0; y != height; ++y) {
+    for (u32 x = 0; x != (width + 1); ++x) {
+      const f32 smokeRight = x != width ? sim_smoke(ctx, x, y) : 0.0f;
+      const f32 smokeLeft  = x ? sim_smoke(ctx, x - 1, y) : 0.0f;
+      const f32 mul        = smokeRight - smokeLeft;
+      ctx->demo->velocitiesX[y * (width + 1) + x] += k * mul * mul;
+    }
+  }
+
+  // Vertical.
+  for (u32 y = 0; y != (height + 1); ++y) {
+    for (u32 x = 0; x != width; ++x) {
+      const f32 smokeTop    = y != height ? sim_smoke(ctx, x, y) : 0.0f;
+      const f32 smokeBottom = y ? sim_smoke(ctx, x, y - 1) : 0.0f;
+      const f32 mul         = smokeTop - smokeBottom;
+      ctx->demo->velocitiesY[y * width + x] += k * mul * mul;
+    }
+  }
+}
+
 static void sim_velocity_advect(DemoUpdateContext* ctx) {
   const u32 width  = ctx->demo->simWidth;
   const u32 height = ctx->demo->simHeight;
@@ -524,6 +551,8 @@ static void sim_update(DemoUpdateContext* ctx) {
   }
   // log_i("Update", log_param("smoke", fmt_float(smokeAmount)));
 
+  (void)sim_smoke_coalesce;
+  // sim_smoke_coalesce(ctx);
   sim_smoke_pull(ctx);
   sim_velocity_diffuse(ctx);
   sim_smoke_advect(ctx);
