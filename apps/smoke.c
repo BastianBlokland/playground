@@ -45,6 +45,7 @@ ecs_comp_define(DemoComp) {
   bool   solve;
   bool   updateVelocities;
   u32    solverIterations;
+  f32    velDiffusion;
   f32    density;
   u32    simWidth, simHeight;
   f32*   velocitiesX; // f32[simHeight * (simWidth + 1)]
@@ -65,10 +66,11 @@ static DemoComp* demo_create(EcsWorld* world) {
       DemoComp,
       .solve            = true,
       .updateVelocities = true,
-      .solverIterations = 16,
+      .solverIterations = 32,
+      .velDiffusion     = 0.25f,
       .density          = 1.0f,
-      .simWidth         = 15,
-      .simHeight        = 15);
+      .simWidth         = 20,
+      .simHeight        = 20);
 
   const u32 width  = demo->simWidth;
   const u32 height = demo->simHeight;
@@ -214,6 +216,41 @@ static f32 sim_sample(const f32* v, const u32 width, const u32 height, const f32
   const f32 vTop    = math_lerp(v1, v2, xFrac);
   const f32 vBottom = math_lerp(v3, v4, xFrac);
   return math_lerp(vBottom, vTop, yFrac);
+}
+
+static void sim_velocity_diffuse(DemoUpdateContext* ctx) {
+  const u32 width  = ctx->demo->simWidth;
+  const u32 height = ctx->demo->simHeight;
+
+  // Horizontal.
+  for (u32 y = 0; y != height; ++y) {
+    for (u32 x = 0; x != (width + 1); ++x) {
+      const f32 velCenter = ctx->demo->velocitiesX[y * (width + 1) + x];
+      const f32 velTop  = (y + 1) != height ? ctx->demo->velocitiesX[(y + 1) * (width + 1) + x] : 0;
+      const f32 velLeft = x ? ctx->demo->velocitiesX[y * (width + 1) + (x - 1)] : 0;
+      const f32 velRight  = x != width ? ctx->demo->velocitiesX[y * (width + 1) + (x + 1)] : 0;
+      const f32 velBottom = y ? ctx->demo->velocitiesX[(y - 1) * (width + 1) + x] : 0;
+
+      const f32 laplacian   = velLeft + velRight + velTop + velBottom - 4 * velCenter;
+      const f32 velDiffused = velCenter + laplacian * ctx->demo->velDiffusion * ctx->dt;
+      ctx->demo->velocitiesX[y * (width + 1) + x] = velDiffused;
+    }
+  }
+
+  // Vertical.
+  for (u32 y = 0; y != (height + 1); ++y) {
+    for (u32 x = 0; x != width; ++x) {
+      const f32 velCenter = ctx->demo->velocitiesY[y * width + x];
+      const f32 velTop    = y != height ? ctx->demo->velocitiesY[(y + 1) * width + x] : 0;
+      const f32 velLeft   = x ? ctx->demo->velocitiesY[y * width + (x - 1)] : 0;
+      const f32 velRight  = (x + 1) != width ? ctx->demo->velocitiesY[y * width + (x + 1)] : 0;
+      const f32 velBottom = y ? ctx->demo->velocitiesY[(y - 1) * width + x] : 0;
+
+      const f32 laplacian   = velLeft + velRight + velTop + velBottom - 4 * velCenter;
+      const f32 velDiffused = velCenter + laplacian * ctx->demo->velDiffusion * ctx->dt;
+      ctx->demo->velocitiesY[y * width + x] = velDiffused;
+    }
+  }
 }
 
 static void sim_velocity_advect(DemoUpdateContext* ctx) {
@@ -398,6 +435,7 @@ static void sim_velocity_update(DemoUpdateContext* ctx) {
 }
 
 static void sim_update(DemoUpdateContext* ctx) {
+  sim_velocity_diffuse(ctx);
   sim_smoke_advect(ctx);
   sim_velocity_advect(ctx);
   if (ctx->demo->solve) {
@@ -608,13 +646,15 @@ static void demo_draw_menu_numbox(const DemoUpdateContext* ctx, const String lab
 }
 
 static void demo_draw_menu(const DemoUpdateContext* ctx) {
-  const UiVector size    = {200, 40};
+  const UiVector size    = {250, 40};
   const UiVector spacing = {5, 5};
 
   ui_layout_inner(ctx->winCanvas, UiBase_Canvas, UiAlign_BottomLeft, size, UiBase_Absolute);
   ui_layout_move(ctx->winCanvas, ui_vector(spacing.x, spacing.y), UiBase_Absolute, Ui_XY);
 
   demo_draw_menu_numbox(ctx, string_lit("Density"), &ctx->demo->density);
+  ui_layout_next(ctx->winCanvas, Ui_Up, spacing.y);
+  demo_draw_menu_numbox(ctx, string_lit("Velocity Diff"), &ctx->demo->velDiffusion);
 }
 
 ecs_view_define(FrameUpdateView) { ecs_access_write(RendSettingsGlobalComp); }
