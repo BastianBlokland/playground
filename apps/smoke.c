@@ -345,6 +345,19 @@ static void sim_smoke_advect(DemoUpdateContext* ctx) {
       mem_create(smoke, sizeof(f32) * height * width));
 }
 
+static f32 sim_smoke_count(DemoUpdateContext* ctx) {
+  const u32 width  = ctx->demo->simWidth;
+  const u32 height = ctx->demo->simHeight;
+
+  f32 smokeSum = 0;
+  for (u32 y = 0; y != height; ++y) {
+    for (u32 x = 0; x != width; ++x) {
+      smokeSum += ctx->demo->smoke[y * width + x];
+    }
+  }
+  return smokeSum;
+}
+
 static void
 sim_push(DemoUpdateContext* ctx, const u32 x, const u32 y, const f32 forceX, const f32 forceY) {
   ctx->demo->velocitiesY[y * ctx->demo->simWidth + x] += forceY;             // Bottom.
@@ -379,6 +392,8 @@ static void sim_solve_pressure(DemoUpdateContext* ctx) {
     return;
   }
 
+  const f32 pressureDecay = 1.0f;
+
   const u32 xMax = width - 1;
   const u32 yMax = height - 1;
 
@@ -408,6 +423,7 @@ static void sim_solve_pressure(DemoUpdateContext* ctx) {
         const f32 velDelta  = velRight - velLeft + velTop - velBottom;
 
         newPressure = (pressureSum - density * velDelta / ctx->dt) / flowCount;
+        newPressure -= newPressure * pressureDecay * ctx->dt;
       }
       ctx->demo->pressure[y * width + x] = newPressure;
     }
@@ -455,7 +471,7 @@ static void sim_smoke_pull(DemoUpdateContext* ctx) {
   const u32 width  = ctx->demo->simWidth;
   const u32 height = ctx->demo->simHeight;
 
-  const f32 force = 10.0f;
+  const f32 force = 500.0f;
 
   // Horizontal.
   for (u32 y = 0; y != height; ++y) {
@@ -469,8 +485,9 @@ static void sim_smoke_pull(DemoUpdateContext* ctx) {
       if (distSqr < f32_epsilon) {
         continue;
       }
-      const f32 dist = intrinsic_sqrt_f32(distSqr);
-      ctx->demo->velocitiesX[y * (width + 1) + x] += (dX / dist) * force * ctx->dt * smoke;
+      const f32 dist     = intrinsic_sqrt_f32(distSqr);
+      const f32 forceMul = smoke * smoke;
+      ctx->demo->velocitiesX[y * (width + 1) + x] += (dX / dist) * force * ctx->dt * forceMul;
     }
   }
 
@@ -486,17 +503,22 @@ static void sim_smoke_pull(DemoUpdateContext* ctx) {
       if (distSqr < f32_epsilon) {
         continue;
       }
-      const f32 dist = intrinsic_sqrt_f32(distSqr);
-      ctx->demo->velocitiesY[y * width + x] += (dY / dist) * force * ctx->dt * smoke;
+      const f32 dist     = intrinsic_sqrt_f32(distSqr);
+      const f32 forceMul = smoke * smoke;
+      ctx->demo->velocitiesY[y * width + x] += (dY / dist) * force * ctx->dt * forceMul;
     }
   }
 }
 
 static void sim_update(DemoUpdateContext* ctx) {
-  sim_smoke_emit(ctx, 4, 3, 2.0f * ctx->dt);
-  // sim_push(ctx, 4, 3, 0, 1000.0f * ctx->dt);
-  // sim_smoke_emit(ctx, 10, 3, 2.0f * ctx->dt);
-  // sim_push(ctx, 10, 3, 0, 1000.0f * ctx->dt);
+  const f32 smokeAmount = sim_smoke_count(ctx);
+  if (smokeAmount < 25.0f) {
+    sim_smoke_emit(ctx, 4, 3, 2.0f * ctx->dt);
+    // sim_push(ctx, 4, 3, 0, 1000.0f * ctx->dt);
+    // sim_smoke_emit(ctx, 10, 3, 2.0f * ctx->dt);
+    // sim_push(ctx, 10, 3, 0, 1000.0f * ctx->dt);
+  }
+  // log_i("Update", log_param("smoke", fmt_float(smokeAmount)));
 
   sim_smoke_pull(ctx);
   sim_velocity_diffuse(ctx);
