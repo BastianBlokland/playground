@@ -43,6 +43,8 @@ ecs_comp_define(DemoComp) {
   EcsEntityId window;
   TimeSteady  lastTime;
 
+  f32 targetX, targetY;
+
   bool   solve;
   bool   updateVelocities;
   u32    solverIterations;
@@ -67,6 +69,8 @@ static DemoComp* demo_create(EcsWorld* world) {
       DemoComp,
       .solve            = true,
       .updateVelocities = true,
+      .targetX          = 12,
+      .targetY          = 12,
       .solverIterations = 32,
       .velDiffusion     = 0.25f,
       .density          = 1.0f,
@@ -141,6 +145,11 @@ static bool sim_solid(DemoUpdateContext* ctx, const u32 x, const u32 y) {
 static void sim_solid_flip(DemoUpdateContext* ctx, const u32 x, const u32 y) {
   const u32 width = ctx->demo->simWidth;
   bitset_flip(ctx->demo->solidMap, y * width + x);
+}
+
+static void sim_solid_set(DemoUpdateContext* ctx, const u32 x, const u32 y) {
+  const u32 width = ctx->demo->simWidth;
+  bitset_set(ctx->demo->solidMap, y * width + x);
 }
 
 static f32 sim_pressure(DemoUpdateContext* ctx, const u32 x, const u32 y) {
@@ -442,12 +451,54 @@ static void sim_velocity_update(DemoUpdateContext* ctx) {
   }
 }
 
+static void sim_smoke_pull(DemoUpdateContext* ctx) {
+  const u32 width  = ctx->demo->simWidth;
+  const u32 height = ctx->demo->simHeight;
+
+  const f32 force = 10.0f;
+
+  // Horizontal.
+  for (u32 y = 0; y != height; ++y) {
+    for (u32 x = 0; x != (width + 1); ++x) {
+      const f32 posX    = x;
+      const f32 posY    = y + 0.5f;
+      const f32 smoke   = sim_sample(ctx->demo->smoke, width, height, posX, posY);
+      const f32 dX      = ctx->demo->targetX - posX;
+      const f32 dY      = ctx->demo->targetY - posY;
+      const f32 distSqr = dX * dX + dY * dY;
+      if (distSqr < f32_epsilon) {
+        continue;
+      }
+      const f32 dist = intrinsic_sqrt_f32(distSqr);
+      ctx->demo->velocitiesX[y * (width + 1) + x] += (dX / dist) * force * ctx->dt * smoke;
+    }
+  }
+
+  // Vertical.
+  for (u32 y = 0; y != (height + 1); ++y) {
+    for (u32 x = 0; x != width; ++x) {
+      const f32 posX    = x + 0.5f;
+      const f32 posY    = y;
+      const f32 smoke   = sim_sample(ctx->demo->smoke, width, height, posX, posY);
+      const f32 dX      = ctx->demo->targetX - posX;
+      const f32 dY      = ctx->demo->targetY - posY;
+      const f32 distSqr = dX * dX + dY * dY;
+      if (distSqr < f32_epsilon) {
+        continue;
+      }
+      const f32 dist = intrinsic_sqrt_f32(distSqr);
+      ctx->demo->velocitiesY[y * width + x] += (dY / dist) * force * ctx->dt * smoke;
+    }
+  }
+}
+
 static void sim_update(DemoUpdateContext* ctx) {
   sim_smoke_emit(ctx, 4, 3, 2.0f * ctx->dt);
-  sim_push(ctx, 4, 3, 0, 1000.0f * ctx->dt);
-  sim_smoke_emit(ctx, 10, 3, 2.0f * ctx->dt);
-  sim_push(ctx, 10, 3, 0, 1000.0f * ctx->dt);
+  // sim_push(ctx, 4, 3, 0, 1000.0f * ctx->dt);
+  // sim_smoke_emit(ctx, 10, 3, 2.0f * ctx->dt);
+  // sim_push(ctx, 10, 3, 0, 1000.0f * ctx->dt);
 
+  sim_smoke_pull(ctx);
   sim_velocity_diffuse(ctx);
   sim_smoke_advect(ctx);
   sim_velocity_advect(ctx);
@@ -563,10 +614,17 @@ static void sim_draw(DemoUpdateContext* ctx) {
       } else if (status == UiStatus_ActivatedAlt) {
         sim_smoke_emit(ctx, x, y, 5);
       }
-      if (status == UiStatus_Hovered && gap_window_key_down(ctx->winComp, GapKey_Tab)) {
-        const GapVector cursorDelta = gap_window_param(ctx->winComp, GapParam_CursorDelta);
-        const f32       forceMul    = 100.0f;
-        sim_push(ctx, x, y, cursorDelta.x * forceMul * ctx->dt, cursorDelta.y * forceMul * ctx->dt);
+      if (status == UiStatus_Hovered /* && gap_window_key_down(ctx->winComp, GapKey_Tab) */) {
+        // const GapVector cursorDelta = gap_window_param(ctx->winComp, GapParam_CursorDelta);
+        // const f32       forceMul    = 100.0f;
+        // sim_push(ctx, x, y, cursorDelta.x * forceMul * ctx->dt, cursorDelta.y * forceMul *
+        // ctx->dt);
+        ctx->demo->targetX = x;
+        ctx->demo->targetY = y;
+
+        if (gap_window_key_down(ctx->winComp, GapKey_Tab)) {
+          sim_solid_set(ctx, x, y);
+        }
       }
 
       {
@@ -576,7 +634,7 @@ static void sim_draw(DemoUpdateContext* ctx) {
             cellOrg.x + x * cellSize.x + cellSize.x * 0.5f,
             cellOrg.y + y * cellSize.y + cellSize.y * 0.5f,
         };
-        const f32 lineScale = 2.0f;
+        const f32 lineScale = 10.0f;
         ui_style_color(ctx->winCanvas, lineColor);
         ui_line(
             ctx->winCanvas,
