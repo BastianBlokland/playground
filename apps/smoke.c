@@ -520,6 +520,13 @@ static void sim_draw(DemoUpdateContext* ctx) {
       const f32 smoke      = sim_smoke(ctx, x, y);
 
       (void)speed;
+      (void)divergence;
+      (void)pressure;
+
+      const f32 velX =
+          sim_sample(ctx->demo->velocitiesX, simWidth + 1, simHeight, x + 0.5f, y + 0.5f);
+      const f32 velY =
+          sim_sample(ctx->demo->velocitiesY, simWidth, simHeight + 1, x + 0.5f, y + 0.5f);
 
       UiColor color;
       if (sim_solid(ctx, x, y)) {
@@ -547,8 +554,24 @@ static void sim_draw(DemoUpdateContext* ctx) {
         sim_push(ctx, x, y, 1000.0f * ctx->dt);
       }
 
-      ui_style_color(ctx->winCanvas, ui_color_white);
+      {
+        const f32      lineColorFrac = math_clamp_f32(math_abs(divergence), 0.0f, 1.0f);
+        const UiColor  lineColor     = ui_color_lerp(ui_color_green, ui_color_red, lineColorFrac);
+        const UiVector posLineA      = {
+            cellOrg.x + x * cellSize.x + cellSize.x * 0.5f,
+            cellOrg.y + y * cellSize.y + cellSize.y * 0.5f,
+        };
+        const f32 lineScale = 2.0f;
+        ui_style_color(ctx->winCanvas, lineColor);
+        ui_line(
+            ctx->winCanvas,
+            posLineA,
+            ui_vector(posLineA.x + velX * lineScale, posLineA.y + velY * lineScale),
+            .base  = UiBase_Absolute,
+            .width = 4.0f);
+      }
 
+      ui_style_color(ctx->winCanvas, ui_color_white);
       const String label = fmt_write_scratch(
           "{}\n{}",
           fmt_float(
@@ -570,48 +593,48 @@ static void sim_draw(DemoUpdateContext* ctx) {
   ui_layout_resize(ctx->winCanvas, UiAlign_BottomLeft, ui_vector(5, 5), UiBase_Absolute, Ui_XY);
 
   // Horizontal.
-  for (u32 y = 0; y != simHeight; ++y) {
-    for (u32 x = 0; x != (simWidth + 1); ++x) {
-      const f32      velo = ctx->demo->velocitiesX[y * (simWidth + 1) + x];
-      const UiVector pos  = {
-          cellOrg.x + x * cellSize.x,
-          cellOrg.y + y * cellSize.y + cellSize.y * 0.5f,
-      };
-      ui_style_color(ctx->winCanvas, ui_color_red);
-      ui_layout_set_pos(
-          ctx->winCanvas, UiBase_Canvas, ui_vector(pos.x - 2.5f, pos.y - 2.5f), UiBase_Absolute);
-      ui_canvas_draw_glyph(ctx->winCanvas, UiShape_Circle, 0, UiFlags_None);
+  // for (u32 y = 0; y != simHeight; ++y) {
+  //   for (u32 x = 0; x != (simWidth + 1); ++x) {
+  //     const f32      velo = ctx->demo->velocitiesX[y * (simWidth + 1) + x];
+  //     const UiVector pos  = {
+  //         cellOrg.x + x * cellSize.x,
+  //         cellOrg.y + y * cellSize.y + cellSize.y * 0.5f,
+  //     };
+  //     ui_style_color(ctx->winCanvas, ui_color_red);
+  //     ui_layout_set_pos(
+  //         ctx->winCanvas, UiBase_Canvas, ui_vector(pos.x - 2.5f, pos.y - 2.5f), UiBase_Absolute);
+  //     ui_canvas_draw_glyph(ctx->winCanvas, UiShape_Circle, 0, UiFlags_None);
 
-      ui_line(
-          ctx->winCanvas,
-          pos,
-          ui_vector(pos.x + velo * cellSize.x * 0.05f, pos.y),
-          .base  = UiBase_Absolute,
-          .width = 3.0f);
-    }
-  }
+  //     ui_line(
+  //         ctx->winCanvas,
+  //         pos,
+  //         ui_vector(pos.x + velo * cellSize.x * 0.05f, pos.y),
+  //         .base  = UiBase_Absolute,
+  //         .width = 3.0f);
+  //   }
+  // }
 
-  // Vertical.
-  for (u32 y = 0; y != (simHeight + 1); ++y) {
-    for (u32 x = 0; x != simWidth; ++x) {
-      const f32      velo = ctx->demo->velocitiesY[y * simWidth + x];
-      const UiVector pos  = {
-          cellOrg.x + x * cellSize.x + cellSize.x * 0.5f,
-          cellOrg.y + y * cellSize.y,
-      };
-      ui_style_color(ctx->winCanvas, ui_color_green);
-      ui_layout_set_pos(
-          ctx->winCanvas, UiBase_Canvas, ui_vector(pos.x - 2.5f, pos.y - 2.5f), UiBase_Absolute);
-      ui_canvas_draw_glyph(ctx->winCanvas, UiShape_Circle, 0, UiFlags_None);
+  // // Vertical.
+  // for (u32 y = 0; y != (simHeight + 1); ++y) {
+  //   for (u32 x = 0; x != simWidth; ++x) {
+  //     const f32      velo = ctx->demo->velocitiesY[y * simWidth + x];
+  //     const UiVector pos  = {
+  //         cellOrg.x + x * cellSize.x + cellSize.x * 0.5f,
+  //         cellOrg.y + y * cellSize.y,
+  //     };
+  //     ui_style_color(ctx->winCanvas, ui_color_green);
+  //     ui_layout_set_pos(
+  //         ctx->winCanvas, UiBase_Canvas, ui_vector(pos.x - 2.5f, pos.y - 2.5f), UiBase_Absolute);
+  //     ui_canvas_draw_glyph(ctx->winCanvas, UiShape_Circle, 0, UiFlags_None);
 
-      ui_line(
-          ctx->winCanvas,
-          pos,
-          ui_vector(pos.x, pos.y + velo * cellSize.y * 0.05f),
-          .base  = UiBase_Absolute,
-          .width = 3.0f);
-    }
-  }
+  //     ui_line(
+  //         ctx->winCanvas,
+  //         pos,
+  //         ui_vector(pos.x, pos.y + velo * cellSize.y * 0.05f),
+  //         .base  = UiBase_Absolute,
+  //         .width = 3.0f);
+  //   }
+  // }
 
   ui_style_pop(ctx->winCanvas);
   ui_layout_pop(ctx->winCanvas);
