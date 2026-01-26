@@ -169,10 +169,13 @@ typedef struct {
 
   bool     push;
   SimCoord pushCoord;
-
-  f32 velocityDiffusion;
-  f32 smokeDiffusion;
-  f32 smokeDecay;
+  f32      pushPressure;
+  f32      pullForce;
+  f32      density;
+  f32      pressureDecay;
+  f32      velocityDiffusion;
+  f32      smokeDiffusion;
+  f32      smokeDecay;
 
   // NOTE: Velocities are stored at the edges, not the cell centers.
   SimGrid velocitiesX; // (width + 1) height
@@ -188,6 +191,10 @@ static SimState sim_state_create(const u32 width, const u32 height) {
       .width  = width,
       .height = height,
 
+      .pushPressure      = 500.0f,
+      .pullForce         = 5.0f,
+      .density           = 10.0f,
+      .pressureDecay     = 0.5f,
       .velocityDiffusion = 0.5f,
       .smokeDiffusion    = 0.05f,
       .smokeDecay        = 0.01f,
@@ -250,6 +257,13 @@ static void sim_smoke_emit(SimState* s, const SimCoord c, const f32 smoke) {
 
 static f32 sim_smoke_sum(const SimState* s) { return sim_grid_sum(&s->smoke); }
 
+static void sim_velocity_add(SimState* s, const SimCoord c, const f32 vX, const f32 vY) {
+  sim_grid_add(&s->velocitiesX, c, vX);                        // Left.
+  sim_grid_add(&s->velocitiesX, (SimCoord){c.x + 1, c.y}, vX); // Right.
+  sim_grid_add(&s->velocitiesY, c, vY);                        // Bottom.
+  sim_grid_add(&s->velocitiesY, (SimCoord){c.x, c.y + 1}, vY); // Top.
+}
+
 static f32 sim_velocity_bottom(const SimState* s, const SimCoord c) {
   return sim_grid_get_bounded(&s->velocitiesY, c, 0.0f /* fallback */);
 }
@@ -268,8 +282,71 @@ static f32 sim_velocity_right(const SimState* s, const SimCoord c) {
   return sim_grid_get_bounded(&s->velocitiesY, cRight, 0.0f /* fallback */);
 }
 
+static f32 sim_velocity_x(const SimState* s, const SimCoord c) {
+  return sim_grid_sample(&s->velocitiesX, (SimCoordFrac){c.x + 0.5f, c.y}, 0.0f);
+}
+
+static f32 sim_velocity_y(const SimState* s, const SimCoord c) {
+  return sim_grid_sample(&s->velocitiesY, (SimCoordFrac){c.x, c.y + 0.5f}, 0.0f);
+}
+
+static f32 sim_velocity_divergence(const SimState* s, const SimCoord c) {
+  const f32 vTop    = sim_velocity_top(s, c);
+  const f32 vLeft   = sim_velocity_left(s, c);
+  const f32 vRight  = sim_velocity_right(s, c);
+  const f32 vBottom = sim_velocity_bottom(s, c);
+  return (vRight - vLeft) + (vTop - vBottom);
+}
+
+static f32 sim_speed(const SimState* s, const SimCoord c) {
+  const f32 vX       = sim_velocity_x(s, c);
+  const f32 vY       = sim_velocity_y(s, c);
+  const f32 speedSqr = vX * vX + vY * vY;
+  return speedSqr != 0.0f ? intrinsic_sqrt_f32(speedSqr) : 0.0f;
+}
+
 static bool sim_pushed(const SimState* s, const SimCoord c) {
   return s->push && sim_coord_dist_manhattan(s->pushCoord, c) <= 1;
+}
+
+static f32 sim_pull_force(const SimState* s, const SimCoordFrac c) {
+  const f32 smoke        = sim_grid_sample(&s->smoke, c, 0.0f);
+  const f32 smokeClamped = math_clamp_f32(smoke, 0.0f, 1.0f);
+
+  // NOTE: Arbitrary easing function at the moment.
+  return 1.0f - math_pow_f32(1.0f - smokeClamped, 3.0f);
+}
+
+static void sim_pull(SimState* s, const SimCoordFrac target, const f32 dt) {
+  // Horizontal.
+  for (u32 y = 0; y != s->velocitiesX.height; ++y) {
+    for (u32 x = 0; x != s->velocitiesX.width; ++x) {
+      const f32 deltaX  = target.x - x;
+      const f32 deltaY  = target.y - (y + 0.5f);
+      const f32 distSqr = deltaX * deltaX + deltaY * deltaY;
+      if (distSqr < f32_epsilon) {
+        continue;
+      }
+      const f32 forceMul = sim_pull_force(s, (SimCoordFrac){x, y + 0.5f});
+      const f32 force    = deltaX / intrinsic_sqrt_f32(distSqr) * s->pullForce * dt * forceMul;
+      sim_grid_add(&s->velocitiesX, (SimCoord){x, y}, force);
+    }
+  }
+
+  // Vertical.
+  for (u32 y = 0; y != s->velocitiesY.height; ++y) {
+    for (u32 x = 0; x != s->velocitiesY.width; ++x) {
+      const f32 deltaX  = target.x - (x + 0.5f);
+      const f32 deltaY  = target.y - y;
+      const f32 distSqr = deltaX * deltaX + deltaY * deltaY;
+      if (distSqr < f32_epsilon) {
+        continue;
+      }
+      const f32 forceMul = sim_pull_force(s, (SimCoordFrac){x + 0.5f, y});
+      const f32 force    = deltaY / intrinsic_sqrt_f32(distSqr) * s->pullForce * dt * forceMul;
+      sim_grid_add(&s->velocitiesY, (SimCoord){x, y}, force);
+    }
+  }
 }
 
 static void sim_diffuse_velocity_grid(SimGrid* g, const f32 diffusion, const f32 dt) {
@@ -376,8 +453,8 @@ static void sim_advect_smoke(SimState* s, const f32 dt) {
         sim_grid_set(&smokeNew, cell, 0);
         continue;
       }
-      const f32 veloX = sim_grid_sample(&s->velocitiesX, (SimCoordFrac){x + 0.5f, y + 0.5f}, 0.0f);
-      const f32 veloY = sim_grid_sample(&s->velocitiesY, (SimCoordFrac){x + 0.5f, y + 0.5f}, 0.0f);
+      const f32 veloX = sim_velocity_x(s, (SimCoord){x, y});
+      const f32 veloY = sim_velocity_y(s, (SimCoord){x, y});
 
       const f32 prevX     = x - veloX * dt;
       const f32 prevY     = y - veloY * dt;
@@ -387,6 +464,81 @@ static void sim_advect_smoke(SimState* s, const f32 dt) {
   }
 
   sim_grid_copy(&s->smoke, &smokeNew);
+}
+
+static void sim_solve_pressure(SimState* s, const f32 dt) {
+  if (s->density <= f32_epsilon) {
+    return;
+  }
+  for (u32 y = 0; y != s->height; ++y) {
+    for (u32 x = 0; x != s->width; ++x) {
+      const bool flowTop    = !sim_solid(s, (SimCoord){x + 0, y + 1});
+      const bool flowLeft   = !sim_solid(s, (SimCoord){x - 1, y + 0});
+      const bool flowRight  = !sim_solid(s, (SimCoord){x + 1, y + 0});
+      const bool flowBottom = !sim_solid(s, (SimCoord){x + 0, y - 1});
+      const u8   flowCount  = flowLeft + flowRight + flowTop + flowBottom;
+
+      f32 newPressure;
+      if (sim_pushed(s, (SimCoord){x, y})) {
+        newPressure = s->pushPressure;
+      } else if (sim_solid(s, (SimCoord){x, y}) || !flowCount) {
+        newPressure = 0.0f;
+      } else {
+        const f32 pressureTop    = sim_pressure(s, (SimCoord){x, y + 1}) * flowTop;
+        const f32 pressureLeft   = sim_pressure(s, (SimCoord){x - 1, y}) * flowLeft;
+        const f32 pressureRight  = sim_pressure(s, (SimCoord){x + 1, y}) * flowRight;
+        const f32 pressureBottom = sim_pressure(s, (SimCoord){x, y - 1}) * flowBottom;
+        const f32 pressureSum    = pressureRight + pressureLeft + pressureTop + pressureBottom;
+
+        const f32 velTop    = sim_velocity_top(s, (SimCoord){x, y});
+        const f32 velLeft   = sim_velocity_left(s, (SimCoord){x, y});
+        const f32 velRight  = sim_velocity_right(s, (SimCoord){x, y});
+        const f32 velBottom = sim_velocity_bottom(s, (SimCoord){x, y});
+        const f32 velDelta  = velRight - velLeft + velTop - velBottom;
+
+        newPressure = (pressureSum - s->density * velDelta / dt) / flowCount;
+        newPressure -= newPressure * s->density * s->pressureDecay * dt;
+      }
+      sim_grid_set(&s->pressure, (SimCoord){x, y}, newPressure);
+    }
+  }
+}
+
+static void sim_solve_velocity(SimState* s, const f32 dt) {
+  if (s->density <= f32_epsilon) {
+    return;
+  }
+  const f32 k = dt / s->density;
+
+  // Horizontal.
+  for (u32 y = 0; y != s->velocitiesX.height; ++y) {
+    for (u32 x = 0; x != s->velocitiesX.width; ++x) {
+      const SimCoord cellLeft  = (SimCoord){x - 1, y};
+      const SimCoord cellRight = (SimCoord){x + 0, y};
+      if (sim_solid(s, cellLeft) || sim_solid(s, cellRight)) {
+        sim_grid_set(&s->velocitiesX, (SimCoord){x, y}, 0.0f);
+        continue;
+      }
+      const f32 pressureLeft  = sim_pressure(s, cellLeft);
+      const f32 pressureRight = sim_pressure(s, cellRight);
+      sim_grid_add(&s->velocitiesX, (SimCoord){x, y}, k * -(pressureRight - pressureLeft));
+    }
+  }
+
+  // Vertical.
+  for (u32 y = 0; y != s->velocitiesY.height; ++y) {
+    for (u32 x = 0; x != s->velocitiesY.width; ++x) {
+      const SimCoord cellBottom = (SimCoord){x, y - 1};
+      const SimCoord cellTop    = (SimCoord){x, y + 0};
+      if (sim_solid(s, cellBottom) || sim_solid(s, cellTop)) {
+        sim_grid_set(&s->velocitiesY, (SimCoord){x, y}, 0.0f);
+        continue;
+      }
+      const f32 pressureBottom = sim_pressure(s, cellBottom);
+      const f32 pressureTop    = sim_pressure(s, cellTop);
+      sim_grid_add(&s->velocitiesY, (SimCoord){x, y}, k * -(pressureTop - pressureBottom));
+    }
+  }
 }
 
 ecs_comp_define(DemoComp) {
