@@ -54,24 +54,45 @@ static SimCoord sim_coord_round_down(const SimCoordFrac c) {
   };
 }
 
+static bool sim_coord_valid(const SimCoord c, const u32 width, const u32 height) {
+  if (c.x < 0 || c.x > (i32)width) {
+    return false;
+  }
+  if (c.y < 0 || c.y > (i32)height) {
+    return false;
+  }
+  return true;
+}
+
+static u32 sim_coord_dist_manhattan(const SimCoord a, const SimCoord b) {
+  return (u32)(math_abs(a.x - b.x) + math_abs(a.y - b.y));
+}
+
 typedef struct {
   u32  width, height;
   f32* values;
 } SimGrid;
 
-static SimGrid sim_grid_create(const u32 width, const u32 height) {
+static SimGrid sim_grid_create(Allocator* a, const u32 width, const u32 height) {
   return (SimGrid){
       .width  = width,
       .height = height,
-      .values = alloc_array_t(g_allocHeap, f32, height * width),
+      .values = alloc_array_t(a, f32, height * width),
   };
 }
 
-static void sim_grid_destroy(SimGrid* g) {
-  alloc_free_array_t(g_allocHeap, g->values, g->height * g->width);
+static void sim_grid_destroy(Allocator* a, SimGrid* g) {
+  alloc_free_array_t(a, g->values, g->height * g->width);
 }
 
 static u32 sim_grid_count(const SimGrid* g) { return g->height * g->width; }
+
+static void sim_grid_copy(const SimGrid* dst, const SimGrid* src) {
+  const u32 count = sim_grid_count(src);
+  diag_assert(sim_grid_count(dst) == count);
+  const usize size = sizeof(f32) * count;
+  mem_cpy(mem_create(dst->values, size), mem_create(src->values, size));
+}
 
 static void sim_grid_clear(SimGrid* g) {
   mem_set(mem_create(g->values, sim_grid_count(g) * sizeof(f32)), 0);
@@ -100,19 +121,17 @@ static f32 sim_grid_sum(const SimGrid* g) {
   return result;
 }
 
-static bool sim_grid_valid(const SimGrid* g, const SimCoord c) {
-  if (c.x < 0 || c.x > (i32)g->width) {
-    return false;
-  }
-  if (c.y < 0 || c.y > (i32)g->height) {
-    return false;
-  }
-  return true;
+static u32 sim_grid_index(const SimGrid* g, const SimCoord c) {
+  diag_assert(sim_coord_valid(c, g->width, g->height));
+  return c.y * g->width + c.x;
 }
 
-static u32 sim_grid_index(const SimGrid* g, const SimCoord c) {
-  diag_assert(sim_grid_valid(g, c));
-  return c.y * g->width + c.x;
+static void sim_grid_set(SimGrid* g, const SimCoord c, const f32 v) {
+  g->values[sim_grid_index(g, c)] = v;
+}
+
+static void sim_grid_add(SimGrid* g, const SimCoord c, const f32 v) {
+  g->values[sim_grid_index(g, c)] += v;
 }
 
 static f32 sim_grid_get(const SimGrid* g, const SimCoord c) {
@@ -120,7 +139,7 @@ static f32 sim_grid_get(const SimGrid* g, const SimCoord c) {
 }
 
 static f32 sim_grid_get_bounded(const SimGrid* g, const SimCoord c, const f32 fallback) {
-  return sim_grid_valid(g, c) ? sim_grid_get(g, c) : fallback;
+  return sim_coord_valid(c, g->width, g->height) ? sim_grid_get(g, c) : fallback;
 }
 
 static f32 sim_grid_sample(const SimGrid* g, const SimCoordFrac c, const f32 fallback) {
@@ -148,6 +167,13 @@ static f32 sim_grid_sample(const SimGrid* g, const SimCoordFrac c, const f32 fal
 typedef struct {
   u32 width, height;
 
+  bool     push;
+  SimCoord pushCoord;
+
+  f32 velocityDiffusion;
+  f32 smokeDiffusion;
+  f32 smokeDecay;
+
   // NOTE: Velocities are stored at the edges, not the cell centers.
   SimGrid velocitiesX; // (width + 1) height
   SimGrid velocitiesY; // width * (height + 1)
@@ -159,12 +185,17 @@ typedef struct {
 
 static SimState sim_state_create(const u32 width, const u32 height) {
   SimState s = {
-      .width       = width,
-      .height      = height,
-      .velocitiesX = sim_grid_create(width + 1, height),
-      .velocitiesY = sim_grid_create(width, height + 1),
-      .pressure    = sim_grid_create(width, height),
-      .smoke       = sim_grid_create(width, height),
+      .width  = width,
+      .height = height,
+
+      .velocityDiffusion = 0.5f,
+      .smokeDiffusion    = 0.05f,
+      .smokeDecay        = 0.01f,
+
+      .velocitiesX = sim_grid_create(g_allocHeap, width + 1, height),
+      .velocitiesY = sim_grid_create(g_allocHeap, width, height + 1),
+      .pressure    = sim_grid_create(g_allocHeap, width, height),
+      .smoke       = sim_grid_create(g_allocHeap, width, height),
       .solid       = alloc_alloc(g_allocHeap, bits_to_bytes(height * width) + 1, 1),
   };
 
@@ -178,11 +209,184 @@ static SimState sim_state_create(const u32 width, const u32 height) {
 }
 
 static void sim_state_destroy(SimState* s) {
-  sim_grid_destroy(&s->velocitiesX);
-  sim_grid_destroy(&s->velocitiesY);
-  sim_grid_destroy(&s->pressure);
-  sim_grid_destroy(&s->smoke);
+  sim_grid_destroy(g_allocHeap, &s->velocitiesX);
+  sim_grid_destroy(g_allocHeap, &s->velocitiesY);
+  sim_grid_destroy(g_allocHeap, &s->pressure);
+  sim_grid_destroy(g_allocHeap, &s->smoke);
   alloc_free(g_allocHeap, s->solid);
+}
+
+static bool sim_solid(const SimState* s, const SimCoord c) {
+  if (!sim_coord_valid(c, s->width, s->height)) {
+    return false;
+  }
+  return bitset_test(s->solid, c.y * s->width + c.x);
+}
+
+static void sim_solid_flip(SimState* s, const SimCoord c) {
+  diag_assert(sim_coord_valid(c, s->width, s->height));
+  bitset_flip(s->solid, c.y * s->width + c.x);
+}
+
+static void sim_solid_set(SimState* s, const SimCoord c) {
+  diag_assert(sim_coord_valid(c, s->width, s->height));
+  bitset_set(s->solid, c.y * s->width + c.x);
+}
+
+static f32 sim_pressure(const SimState* s, const SimCoord c) {
+  if (sim_solid(s, c)) {
+    return 0.0f;
+  }
+  return sim_grid_get_bounded(&s->pressure, c, 0.0f /* fallback */);
+}
+
+static f32 sim_smoke(const SimState* s, const SimCoord c) {
+  return sim_grid_get_bounded(&s->smoke, c, 0.0f /* fallback */);
+}
+
+static void sim_smoke_emit(SimState* s, const SimCoord c, const f32 smoke) {
+  sim_grid_add(&s->smoke, c, smoke);
+}
+
+static f32 sim_smoke_sum(const SimState* s) { return sim_grid_sum(&s->smoke); }
+
+static f32 sim_velocity_bottom(const SimState* s, const SimCoord c) {
+  return sim_grid_get_bounded(&s->velocitiesY, c, 0.0f /* fallback */);
+}
+
+static f32 sim_velocity_top(const SimState* s, const SimCoord c) {
+  const SimCoord cAbove = {c.x, c.y + 1};
+  return sim_grid_get_bounded(&s->velocitiesY, cAbove, 0.0f /* fallback */);
+}
+
+static f32 sim_velocity_left(const SimState* s, const SimCoord c) {
+  return sim_grid_get_bounded(&s->velocitiesX, c, 0.0f /* fallback */);
+}
+
+static f32 sim_velocity_right(const SimState* s, const SimCoord c) {
+  const SimCoord cRight = {c.x + 1, c.y};
+  return sim_grid_get_bounded(&s->velocitiesY, cRight, 0.0f /* fallback */);
+}
+
+static bool sim_pushed(const SimState* s, const SimCoord c) {
+  return s->push && sim_coord_dist_manhattan(s->pushCoord, c) <= 1;
+}
+
+static void sim_diffuse_velocity_grid(SimGrid* g, const f32 diffusion, const f32 dt) {
+  for (u32 y = 0; y != g->width; ++y) {
+    for (u32 x = 0; x != g->height; ++x) {
+      const f32 vCenter = sim_grid_get(g, (SimCoord){x, y});
+      const f32 vTop    = sim_grid_get_bounded(g, (SimCoord){x + 0, y + 1}, vCenter);
+      const f32 vLeft   = sim_grid_get_bounded(g, (SimCoord){x - 1, y + 0}, vCenter);
+      const f32 vRight  = sim_grid_get_bounded(g, (SimCoord){x + 1, y + 0}, vCenter);
+      const f32 vBottom = sim_grid_get_bounded(g, (SimCoord){x + 0, y - 1}, vCenter);
+
+      const f32 laplacian = vLeft + vRight + vTop + vBottom - 4 * vCenter;
+      const f32 vDiffused = vCenter + laplacian * diffusion * dt;
+      sim_grid_set(g, (SimCoord){x, y}, vDiffused);
+    }
+  }
+}
+
+static void sim_diffuse_velocity(SimState* s, const f32 dt) {
+  if (s->velocityDiffusion >= f32_epsilon) {
+    sim_diffuse_velocity_grid(&s->velocitiesX, s->velocityDiffusion, dt);
+    sim_diffuse_velocity_grid(&s->velocitiesY, s->velocityDiffusion, dt);
+  }
+}
+
+static void sim_diffuse_smoke(SimState* s, const f32 dt) {
+  if (s->smokeDiffusion < f32_epsilon) {
+    return;
+  }
+  for (u32 y = 0; y != s->height; ++y) {
+    for (u32 x = 0; x != s->width; ++x) {
+      if (sim_solid(s, (SimCoord){x, y})) {
+        continue;
+      }
+      const f32 vCenter = sim_grid_get(&s->smoke, (SimCoord){x, y});
+      const f32 vTop    = sim_grid_get_bounded(&s->smoke, (SimCoord){x + 0, y + 1}, 0.0f);
+      const f32 vLeft   = sim_grid_get_bounded(&s->smoke, (SimCoord){x - 1, y + 0}, 0.0f);
+      const f32 vRight  = sim_grid_get_bounded(&s->smoke, (SimCoord){x + 1, y + 0}, 0.0f);
+      const f32 vBottom = sim_grid_get_bounded(&s->smoke, (SimCoord){x + 0, y - 1}, 0.0f);
+
+      const f32 laplacian     = vLeft + vRight + vTop + vBottom - 4 * vCenter;
+      const f32 smokeDiffused = vCenter + s->smokeDiffusion * dt * laplacian;
+      const f32 smokeNew      = smokeDiffused * math_exp_f32(-dt * s->smokeDecay);
+      sim_grid_set(&s->smoke, (SimCoord){x, y}, smokeNew);
+    }
+  }
+}
+
+static void sim_advect_velocity(SimState* s, const f32 dt) {
+  SimGrid velocitiesXNew = sim_grid_create(g_allocScratch, s->width + 1, s->height);
+  SimGrid velocitiesYNew = sim_grid_create(g_allocScratch, s->width, s->height + 1);
+
+  // Horizontal.
+  for (u32 y = 0; y != velocitiesXNew.height; ++y) {
+    for (u32 x = 0; x != velocitiesXNew.width; ++x) {
+      const SimCoord cellLeft  = (SimCoord){x - 1, y};
+      const SimCoord cellRight = (SimCoord){x + 0, y};
+      if (sim_solid(s, cellLeft) || sim_solid(s, cellRight)) {
+        sim_grid_set(&velocitiesXNew, (SimCoord){x, y}, 0.0f);
+        continue;
+      }
+      const f32 veloX = sim_grid_get(&s->velocitiesX, (SimCoord){x, y});
+      const f32 veloY = sim_grid_sample(&s->velocitiesY, (SimCoordFrac){x - 0.5f, y + 0.5f}, 0.0f);
+
+      const f32 prevX = x - veloX * dt;
+      const f32 prevY = y - veloY * dt;
+
+      const f32 veloNew = sim_grid_sample(&s->velocitiesX, (SimCoordFrac){prevX, prevY}, 0.0f);
+      sim_grid_set(&velocitiesXNew, (SimCoord){x, y}, veloNew);
+    }
+  }
+
+  // Vertical.
+  for (u32 y = 0; y != velocitiesYNew.height; ++y) {
+    for (u32 x = 0; x != velocitiesYNew.width; ++x) {
+      const SimCoord cellBottom = (SimCoord){x, y - 1};
+      const SimCoord cellTop    = (SimCoord){x, y + 0};
+      if (sim_solid(s, cellBottom) || sim_solid(s, cellTop)) {
+        sim_grid_set(&velocitiesYNew, (SimCoord){x, y}, 0.0f);
+        continue;
+      }
+      const f32 veloX = sim_grid_sample(&s->velocitiesX, (SimCoordFrac){x + 0.5f, y - 0.5f}, 0.0f);
+      const f32 veloY = sim_grid_get(&s->velocitiesY, (SimCoord){x, y});
+
+      const f32 prevX = x - veloX * dt;
+      const f32 prevY = y - veloY * dt;
+
+      const f32 veloNew = sim_grid_sample(&s->velocitiesY, (SimCoordFrac){prevX, prevY}, 0.0f);
+      sim_grid_set(&velocitiesYNew, (SimCoord){x, y}, veloNew);
+    }
+  }
+
+  sim_grid_copy(&s->velocitiesX, &velocitiesXNew);
+  sim_grid_copy(&s->velocitiesY, &velocitiesYNew);
+}
+
+static void sim_advect_smoke(SimState* s, const f32 dt) {
+  SimGrid smokeNew = sim_grid_create(g_allocScratch, s->width, s->height);
+
+  for (u32 y = 0; y != s->height; ++y) {
+    for (u32 x = 0; x != s->width; ++x) {
+      const SimCoord cell = {x, y};
+      if (sim_solid(s, cell) || sim_pushed(s, cell)) {
+        sim_grid_set(&smokeNew, cell, 0);
+        continue;
+      }
+      const f32 veloX = sim_grid_sample(&s->velocitiesX, (SimCoordFrac){x + 0.5f, y + 0.5f}, 0.0f);
+      const f32 veloY = sim_grid_sample(&s->velocitiesY, (SimCoordFrac){x + 0.5f, y + 0.5f}, 0.0f);
+
+      const f32 prevX     = x - veloX * dt;
+      const f32 prevY     = y - veloY * dt;
+      const f32 prevSmoke = sim_grid_sample(&s->smoke, (SimCoordFrac){prevX, prevY}, 0.0f);
+      sim_grid_set(&smokeNew, cell, prevSmoke);
+    }
+  }
+
+  sim_grid_copy(&s->smoke, &smokeNew);
 }
 
 ecs_comp_define(DemoComp) {
