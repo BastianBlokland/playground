@@ -1438,8 +1438,8 @@ bool app_ecs_init(EcsWorld* world, const CliInvocation* invoc) {
   rend_settings_global_init(world, false /* devSupport */);
   ui_settings_global_init(world);
 
-  const u16 windowWidth  = (u16)cli_read_u64(invoc, g_optWidth, 1600);
-  const u16 windowHeight = (u16)cli_read_u64(invoc, g_optHeight, 1600);
+  const u16 windowWidth  = (u16)cli_read_u64(invoc, g_optWidth, 1200);
+  const u16 windowHeight = (u16)cli_read_u64(invoc, g_optHeight, 1200);
 
   DemoComp* demo = demo_create(world);
 
