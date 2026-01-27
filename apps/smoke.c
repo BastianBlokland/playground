@@ -14,7 +14,6 @@
 #include "core/math.h"
 #include "core/rng.h"
 #include "core/version.h"
-#include "ecs/entity.h"
 #include "ecs/utils.h"
 #include "ecs/view.h"
 #include "gap/error.h"
@@ -26,12 +25,8 @@
 #include "rend/register.h"
 #include "rend/settings.h"
 #include "ui/canvas.h"
-#include "ui/layout.h"
 #include "ui/register.h"
 #include "ui/settings.h"
-#include "ui/shape.h"
-#include "ui/style.h"
-#include "ui/widget.h"
 
 /**
  * Semi-Lagrangian fluid simulation.
