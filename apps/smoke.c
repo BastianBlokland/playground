@@ -29,7 +29,7 @@
 #include "ui/settings.h"
 
 /**
- * Semi-Lagrangian fluid simulation.
+ * Eulerian fluid simulation with Semi-Lagrangian advection.
  * Reference: https://www.cs.ubc.ca/~rbridson/fluidsimulation/fluids_notes.pdf
  * Reference: https://www.youtube.com/watch?v=Q78wvrQ9xsU
  */
