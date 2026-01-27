@@ -25,8 +25,11 @@
 #include "rend/register.h"
 #include "rend/settings.h"
 #include "ui/canvas.h"
+#include "ui/layout.h"
 #include "ui/register.h"
 #include "ui/settings.h"
+#include "ui/shape.h"
+#include "ui/style.h"
 
 /**
  * Eulerian fluid simulation with Semi-Lagrangian advection.
@@ -395,8 +398,8 @@ static void sim_pull(SimState* s, const SimCoordFrac target, const f32 force) {
 }
 
 static void sim_diffuse_velocity_grid(SimGrid* g, const f32 diffusion, const f32 dt) {
-  for (u32 y = 0; y != g->width; ++y) {
-    for (u32 x = 0; x != g->height; ++x) {
+  for (u32 y = 0; y != g->height; ++y) {
+    for (u32 x = 0; x != g->width; ++x) {
       const f32 vCenter = sim_grid_get(g, (SimCoord){x, y});
       const f32 vTop    = sim_grid_get_bounded(g, (SimCoord){x + 0, y + 1}, vCenter);
       const f32 vLeft   = sim_grid_get_bounded(g, (SimCoord){x - 1, y + 0}, vCenter);
@@ -645,6 +648,15 @@ static DemoComp* demo_create(EcsWorld* world, const u16 winWidth, const u16 winH
   const u32 simHeight = 25;
   demo->sim           = sim_state_create(simWidth, simHeight);
 
+  sim_emitter_add(
+      &demo->sim,
+      (SimEmitter){
+          .angle       = 0.0f,
+          .force       = 1.0f,
+          .position    = {2, 2},
+          .smokeAmount = 5.0f,
+      });
+
   return demo;
 }
 
@@ -658,236 +670,51 @@ static f32 demo_time_to_seconds(const TimeDuration dur) {
   return (f32)((f64)dur * g_toSecMul);
 }
 
-// static void sim_draw(DemoUpdateContext* ctx) {
-//   ui_canvas_id_block_next(ctx->winCanvas);
-//   ui_layout_push(ctx->winCanvas);
-//   ui_style_push(ctx->winCanvas);
+static f32 demo_cell_size(UiCanvasComp* c, const SimGrid* g) {
+  const f32 border = 10;
+  const f32 xSize  = (ui_canvas_resolution(c).width - border * 2) / (f32)g->width;
+  const f32 ySize  = (ui_canvas_resolution(c).height - border * 2) / (f32)g->height;
+  return math_min(xSize, ySize);
+}
 
-//   const u32 simWidth  = ctx->demo->simWidth;
-//   const u32 simHeight = ctx->demo->simHeight;
+static void demo_draw_grid(
+    UiCanvasComp*  c,
+    const SimGrid* g,
+    const f32      minVal,
+    const f32      maxVal,
+    const UiColor  minColor,
+    const UiColor  maxColor) {
+  const f32 cellSize = demo_cell_size(c, g);
+  if (cellSize < f32_epsilon) {
+    return;
+  }
+  const UiVector cellOrgin = {
+      ui_canvas_resolution(c).width * 0.5f - g->width * cellSize * 0.5f,
+      ui_canvas_resolution(c).height * 0.5f - g->height * cellSize * 0.5f,
+  };
+  ui_layout_push(c);
+  ui_layout_resize(c, UiAlign_BottomLeft, ui_vector(cellSize, cellSize), UiBase_Absolute, Ui_XY);
+  ui_style_push(c);
+  for (u32 y = 0; y != g->height; ++y) {
+    for (u32 x = 0; x != g->width; ++x) {
+      const f32 v    = sim_grid_get(g, (SimCoord){x, y});
+      const f32 frac = math_clamp_f32(math_unlerp(minVal, maxVal, v), 0.0f, 1.0f);
 
-//   const UiVector canvasSize = ui_canvas_resolution(ctx->winCanvas);
-//   const UiVector cellSize   = ui_vector(40, 40);
-//   const UiVector cellOrg    = {
-//       canvasSize.width * 0.5f - simWidth * cellSize.width * 0.5f,
-//       canvasSize.height * 0.5f - simHeight * cellSize.height * 0.5f,
-//   };
+      ui_style_color(c, ui_color_lerp(minColor, maxColor, frac));
 
-//   const GapVector cursorDelta = gap_window_param(ctx->winComp, GapParam_CursorDelta);
-//   const f32       distSqr     = cursorDelta.x * cursorDelta.x + cursorDelta.y * cursorDelta.y;
-//   if (distSqr > f32_epsilon) {
-//     const f32 dist  = intrinsic_sqrt_f32(distSqr);
-//     ctx->demo->dirX = cursorDelta.x / dist;
-//     ctx->demo->dirY = cursorDelta.y / dist;
-//     log_i(
-//         "Dir",
-//         log_param("x", fmt_float(ctx->demo->dirX)),
-//         log_param("y", fmt_float(ctx->demo->dirY)));
-//   }
+      const UiVector pos = ui_vector(cellOrgin.x + x * cellSize, cellOrgin.y + y * cellSize);
+      ui_layout_set_pos(c, UiBase_Canvas, pos, UiBase_Absolute);
 
-//   ctx->demo->push = false;
+      ui_canvas_draw_glyph(c, UiShape_Square, 5, UiFlags_None);
+    }
+  }
+  ui_style_pop(c);
+  ui_layout_pop(c);
+}
 
-//   ui_layout_resize(ctx->winCanvas, UiAlign_BottomLeft, cellSize, UiBase_Absolute, Ui_XY);
-//   for (u32 y = 0; y != simHeight; ++y) {
-//     for (u32 x = 0; x != simWidth; ++x) {
-//       const f32 divergence = sim_velocity_divergence(ctx, x, y);
-//       const f32 pressure   = sim_pressure(ctx, x, y);
-//       const f32 speed      = sim_speed(ctx, x, y);
-//       const f32 smoke      = sim_smoke(ctx, x, y);
-
-//       (void)speed;
-//       (void)divergence;
-//       (void)pressure;
-
-//       const f32 velX =
-//           sim_sample(ctx->demo->velocitiesX, simWidth + 1, simHeight, x + 0.5f, y + 0.5f);
-//       const f32 velY =
-//           sim_sample(ctx->demo->velocitiesY, simWidth, simHeight + 1, x + 0.5f, y + 0.5f);
-
-//       UiColor color;
-//       if (sim_solid(ctx, x, y)) {
-//         color = ui_color_gray;
-//       } else {
-//         // const f32 frac = math_clamp_f32(pressure * 0.01f, -1.0f, 1.0f);
-//         // color          = ui_color_lerp(ui_color_green, ui_color_red, (frac + 1.0f) * 0.5f);
-
-//         const f32 frac = math_clamp_f32(smoke * 10, 0.0f, 1.0f);
-//         color          = ui_color_lerp(ui_color_green, ui_color_red, frac);
-//       }
-//       ui_style_color(ctx->winCanvas, color);
-
-//       const UiVector pos = ui_vector(cellOrg.x + x * cellSize.x, cellOrg.y + y * cellSize.y);
-//       ui_layout_set_pos(ctx->winCanvas, UiBase_Canvas, pos, UiBase_Absolute);
-//       const UiId id = ui_canvas_draw_glyph(
-//           ctx->winCanvas, UiShape_Square, 5, UiFlags_Interactable | UiFlags_InteractSupportAlt);
-//       const UiStatus status = ui_canvas_elem_status(ctx->winCanvas, id);
-//       if (status == UiStatus_Activated) {
-//         sim_solid_flip(ctx, x, y);
-//       } else if (status == UiStatus_ActivatedAlt) {
-//       }
-//       if (status == UiStatus_Hovered /* && gap_window_key_down(ctx->winComp, GapKey_Tab) */) {
-//         ctx->demo->targetX = x;
-//         ctx->demo->targetY = y;
-
-//         if (gap_window_key_down(ctx->winComp, GapKey_Tab)) {
-//           sim_solid_set(ctx, x, y);
-//         }
-//         ctx->demo->push = gap_window_key_down(ctx->winComp, GapKey_Control);
-//         // if (gap_window_key_down(ctx->winComp, GapKey_Control)) {
-//         //   const f32 forceMul = 1000.0f;
-//         //   sim_push(
-//         //       ctx,
-//         //       x,
-//         //       y,
-//         //       ctx->demo->dirX * forceMul * ctx->dt,
-//         //       ctx->demo->dirY * forceMul * ctx->dt);
-//         // }
-//       }
-
-//       {
-//         const f32      lineColorFrac = math_clamp_f32(math_abs(divergence), 0.0f, 1.0f);
-//         const UiColor  lineColor     = ui_color_lerp(ui_color_green, ui_color_red,
-//         lineColorFrac); const UiVector posLineA      = {
-//             cellOrg.x + x * cellSize.x + cellSize.x * 0.5f,
-//             cellOrg.y + y * cellSize.y + cellSize.y * 0.5f,
-//         };
-//         const f32 lineScale = 10.0f;
-//         ui_style_color(ctx->winCanvas, lineColor);
-//         ui_line(
-//             ctx->winCanvas,
-//             posLineA,
-//             ui_vector(posLineA.x + velX * lineScale, posLineA.y + velY * lineScale),
-//             .base  = UiBase_Absolute,
-//             .width = 4.0f);
-//       }
-
-//       ui_style_color(ctx->winCanvas, ui_color_white);
-//       const String label = fmt_write_scratch(
-//           "{}\n{}",
-//           fmt_float(
-//               pressure,
-//               .minDecDigits    = 2,
-//               .maxDecDigits    = 2,
-//               .expThresholdPos = f64_max,
-//               .expThresholdNeg = 0),
-//           fmt_float(
-//               divergence,
-//               .minDecDigits    = 2,
-//               .maxDecDigits    = 2,
-//               .expThresholdPos = f64_max,
-//               .expThresholdNeg = 0));
-//       ui_canvas_draw_text(ctx->winCanvas, label, 10, UiAlign_MiddleCenter, UiFlags_None);
-//     }
-//   }
-
-//   ui_layout_resize(ctx->winCanvas, UiAlign_BottomLeft, ui_vector(5, 5), UiBase_Absolute, Ui_XY);
-
-//   // Horizontal.
-//   // for (u32 y = 0; y != simHeight; ++y) {
-//   //   for (u32 x = 0; x != (simWidth + 1); ++x) {
-//   //     const f32      velo = ctx->demo->velocitiesX[y * (simWidth + 1) + x];
-//   //     const UiVector pos  = {
-//   //         cellOrg.x + x * cellSize.x,
-//   //         cellOrg.y + y * cellSize.y + cellSize.y * 0.5f,
-//   //     };
-//   //     ui_style_color(ctx->winCanvas, ui_color_red);
-//   //     ui_layout_set_pos(
-//   //         ctx->winCanvas, UiBase_Canvas, ui_vector(pos.x - 2.5f, pos.y - 2.5f),
-//   UiBase_Absolute);
-//   //     ui_canvas_draw_glyph(ctx->winCanvas, UiShape_Circle, 0, UiFlags_None);
-
-//   //     ui_line(
-//   //         ctx->winCanvas,
-//   //         pos,
-//   //         ui_vector(pos.x + velo * cellSize.x * 0.05f, pos.y),
-//   //         .base  = UiBase_Absolute,
-//   //         .width = 3.0f);
-//   //   }
-//   // }
-
-//   // // Vertical.
-//   // for (u32 y = 0; y != (simHeight + 1); ++y) {
-//   //   for (u32 x = 0; x != simWidth; ++x) {
-//   //     const f32      velo = ctx->demo->velocitiesY[y * simWidth + x];
-//   //     const UiVector pos  = {
-//   //         cellOrg.x + x * cellSize.x + cellSize.x * 0.5f,
-//   //         cellOrg.y + y * cellSize.y,
-//   //     };
-//   //     ui_style_color(ctx->winCanvas, ui_color_green);
-//   //     ui_layout_set_pos(
-//   //         ctx->winCanvas, UiBase_Canvas, ui_vector(pos.x - 2.5f, pos.y - 2.5f),
-//   UiBase_Absolute);
-//   //     ui_canvas_draw_glyph(ctx->winCanvas, UiShape_Circle, 0, UiFlags_None);
-
-//   //     ui_line(
-//   //         ctx->winCanvas,
-//   //         pos,
-//   //         ui_vector(pos.x, pos.y + velo * cellSize.y * 0.05f),
-//   //         .base  = UiBase_Absolute,
-//   //         .width = 3.0f);
-//   //   }
-//   // }
-
-//   ui_style_pop(ctx->winCanvas);
-//   ui_layout_pop(ctx->winCanvas);
-//   ui_canvas_id_block_next(ctx->winCanvas);
-// }
-
-// static void demo_draw_menu_frame(const DemoUpdateContext* ctx) {
-//   ui_style_push(ctx->winCanvas);
-//   ui_style_outline(ctx->winCanvas, 5);
-//   ui_style_color(ctx->winCanvas, ui_color(0, 0, 0, 200));
-//   ui_canvas_draw_glyph(ctx->winCanvas, UiShape_Circle, 10, UiFlags_None);
-//   ui_style_pop(ctx->winCanvas);
-// }
-
-// static void demo_draw_numbox_f32(const DemoUpdateContext* ctx, const String label, f32* value) {
-//   demo_draw_menu_frame(ctx);
-//   ui_layout_push(ctx->winCanvas);
-//   static const UiVector g_frameInset = {-30, -20};
-//   ui_layout_grow(ctx->winCanvas, UiAlign_MiddleCenter, g_frameInset, UiBase_Absolute, Ui_XY);
-//   ui_label(ctx->winCanvas, label);
-//   ui_layout_inner(
-//       ctx->winCanvas, UiBase_Current, UiAlign_MiddleRight, ui_vector(0.5f, 1), UiBase_Current);
-//   f64 val = *value;
-//   if (ui_numbox(ctx->winCanvas, &val)) {
-//     *value = (f32)val;
-//   }
-//   ui_layout_pop(ctx->winCanvas);
-// }
-
-// static void demo_draw_numbox_u32(const DemoUpdateContext* ctx, const String label, u32* value) {
-//   demo_draw_menu_frame(ctx);
-//   ui_layout_push(ctx->winCanvas);
-//   static const UiVector g_frameInset = {-30, -20};
-//   ui_layout_grow(ctx->winCanvas, UiAlign_MiddleCenter, g_frameInset, UiBase_Absolute, Ui_XY);
-//   ui_label(ctx->winCanvas, label);
-//   ui_layout_inner(
-//       ctx->winCanvas, UiBase_Current, UiAlign_MiddleRight, ui_vector(0.5f, 1), UiBase_Current);
-//   f64 val = *value;
-//   if (ui_numbox(ctx->winCanvas, &val, .step = 1.0)) {
-//     *value = (u32)val;
-//   }
-//   ui_layout_pop(ctx->winCanvas);
-// }
-
-// static void demo_draw_menu(const DemoUpdateContext* ctx) {
-//   const UiVector size    = {250, 40};
-//   const UiVector spacing = {5, 5};
-
-//   ui_layout_inner(ctx->winCanvas, UiBase_Canvas, UiAlign_BottomLeft, size, UiBase_Absolute);
-//   ui_layout_move(ctx->winCanvas, ui_vector(spacing.x, spacing.y), UiBase_Absolute, Ui_XY);
-
-//   demo_draw_numbox_f32(ctx, string_lit("Density"), &ctx->demo->density);
-//   ui_layout_next(ctx->winCanvas, Ui_Up, spacing.y);
-//   demo_draw_numbox_f32(ctx, string_lit("Velocity diff"), &ctx->demo->velDiffusion);
-//   ui_layout_next(ctx->winCanvas, Ui_Up, spacing.y);
-//   demo_draw_numbox_f32(ctx, string_lit("Smoke diff"), &ctx->demo->smokeDiffusion);
-//   ui_layout_next(ctx->winCanvas, Ui_Up, spacing.y);
-//   demo_draw_numbox_f32(ctx, string_lit("Smoke decay"), &ctx->demo->smokeDecay);
-//   ui_layout_next(ctx->winCanvas, Ui_Up, spacing.y);
-//   demo_draw_numbox_u32(ctx, string_lit("Solver itrs"), &ctx->demo->solverIterations);
-// }
+static void demo_draw(UiCanvasComp* c, const SimState* s) {
+  demo_draw_grid(c, &s->smoke, 0.0f, 1.0f, ui_color_black, ui_color_white);
+}
 
 ecs_view_define(FrameUpdateView) { ecs_access_write(RendSettingsGlobalComp); }
 
@@ -932,14 +759,11 @@ ecs_system_define(DemoUpdateSys) {
       gap_window_close(winComp);
     }
 
-    UiCanvasComp* uiCanvas = null;
     if (ecs_view_maybe_jump(canvasItr, demo->uiCanvas)) {
-      uiCanvas = ecs_view_write_t(canvasItr, UiCanvasComp);
+      UiCanvasComp* uiCanvas = ecs_view_write_t(canvasItr, UiCanvasComp);
       ui_canvas_reset(uiCanvas);
+      demo_draw(uiCanvas, &demo->sim);
     }
-
-    // TODO: Draw visualization.
-    (void)uiCanvas;
   }
 }
 
