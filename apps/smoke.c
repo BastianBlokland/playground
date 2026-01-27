@@ -165,17 +165,30 @@ static f32 sim_grid_sample(const SimGrid* g, const SimCoordFrac c, const f32 fal
 }
 
 typedef struct {
+  SimCoord position;
+  f32      smokeAmount, angle /* in radians */, force;
+} SimEmitter;
+
+typedef struct {
   u32 width, height;
+
+  u32 solverIterations;
+  f32 density;
+  f32 pressureDecay;
+  f32 velocityDiffusion;
+  f32 smokeDiffusion;
+  f32 smokeDecay;
 
   bool     push;
   SimCoord pushCoord;
   f32      pushPressure;
-  f32      pullForce;
-  f32      density;
-  f32      pressureDecay;
-  f32      velocityDiffusion;
-  f32      smokeDiffusion;
-  f32      smokeDecay;
+
+  bool         pull;
+  SimCoordFrac pullCoord;
+  f32          pullForce;
+
+  SimEmitter emitters[4];
+  u32        emitterCount;
 
   // NOTE: Velocities are stored at the edges, not the cell centers.
   SimGrid velocitiesX; // (width + 1) height
@@ -191,13 +204,14 @@ static SimState sim_state_create(const u32 width, const u32 height) {
       .width  = width,
       .height = height,
 
-      .pushPressure      = 500.0f,
-      .pullForce         = 5.0f,
+      .solverIterations  = 32,
       .density           = 10.0f,
       .pressureDecay     = 0.5f,
       .velocityDiffusion = 0.5f,
       .smokeDiffusion    = 0.05f,
       .smokeDecay        = 0.01f,
+      .pushPressure      = 500.0f,
+      .pullForce         = 5.0f,
 
       .velocitiesX = sim_grid_create(g_allocHeap, width + 1, height),
       .velocitiesY = sim_grid_create(g_allocHeap, width, height + 1),
@@ -223,6 +237,16 @@ static void sim_state_destroy(SimState* s) {
   alloc_free(g_allocHeap, s->solid);
 }
 
+static bool sim_emitter_add(SimState* s, const SimEmitter e) {
+  if (s->emitterCount == array_elems(s->emitters)) {
+    return false;
+  }
+  s->emitters[s->emitterCount++] = e;
+  return true;
+}
+
+static void sim_emitter_clear(SimState* s) { s->emitterCount = 0; }
+
 static bool sim_solid(const SimState* s, const SimCoord c) {
   if (!sim_coord_valid(c, s->width, s->height)) {
     return false;
@@ -240,12 +264,26 @@ static void sim_solid_set(SimState* s, const SimCoord c) {
   bitset_set(s->solid, c.y * s->width + c.x);
 }
 
+static void sim_solid_set_border(SimState* s) {
+  for (u32 y = 0; y != s->height; ++y) {
+    for (u32 x = 0; x != s->width; ++x) {
+      if (!x || !y || x == (s->width - 1) || y == (s->height - 1)) {
+        bitset_set(s->solid, y * s->width + x);
+      }
+    }
+  }
+}
+
+static void sim_solid_clear(SimState* s) { bitset_clear_all(s->solid); }
+
 static f32 sim_pressure(const SimState* s, const SimCoord c) {
   if (sim_solid(s, c)) {
     return 0.0f;
   }
   return sim_grid_get_bounded(&s->pressure, c, 0.0f /* fallback */);
 }
+
+static void sim_pressure_clear(SimState* s) { sim_grid_clear(&s->pressure); }
 
 static f32 sim_smoke(const SimState* s, const SimCoord c) {
   return sim_grid_get_bounded(&s->smoke, c, 0.0f /* fallback */);
@@ -257,11 +295,18 @@ static void sim_smoke_emit(SimState* s, const SimCoord c, const f32 smoke) {
 
 static f32 sim_smoke_sum(const SimState* s) { return sim_grid_sum(&s->smoke); }
 
+static void sim_smoke_clear(SimState* s) { sim_grid_clear(&s->smoke); }
+
 static void sim_velocity_add(SimState* s, const SimCoord c, const f32 vX, const f32 vY) {
   sim_grid_add(&s->velocitiesX, c, vX);                        // Left.
   sim_grid_add(&s->velocitiesX, (SimCoord){c.x + 1, c.y}, vX); // Right.
   sim_grid_add(&s->velocitiesY, c, vY);                        // Bottom.
   sim_grid_add(&s->velocitiesY, (SimCoord){c.x, c.y + 1}, vY); // Top.
+}
+
+static void sim_velocity_clear(SimState* s) {
+  sim_grid_clear(&s->velocitiesX);
+  sim_grid_clear(&s->velocitiesY);
 }
 
 static f32 sim_velocity_bottom(const SimState* s, const SimCoord c) {
@@ -317,7 +362,7 @@ static f32 sim_pull_force(const SimState* s, const SimCoordFrac c) {
   return 1.0f - math_pow_f32(1.0f - smokeClamped, 3.0f);
 }
 
-static void sim_pull(SimState* s, const SimCoordFrac target, const f32 dt) {
+static void sim_pull(SimState* s, const SimCoordFrac target, const f32 force) {
   // Horizontal.
   for (u32 y = 0; y != s->velocitiesX.height; ++y) {
     for (u32 x = 0; x != s->velocitiesX.width; ++x) {
@@ -327,9 +372,9 @@ static void sim_pull(SimState* s, const SimCoordFrac target, const f32 dt) {
       if (distSqr < f32_epsilon) {
         continue;
       }
-      const f32 forceMul = sim_pull_force(s, (SimCoordFrac){x, y + 0.5f});
-      const f32 force    = deltaX / intrinsic_sqrt_f32(distSqr) * s->pullForce * dt * forceMul;
-      sim_grid_add(&s->velocitiesX, (SimCoord){x, y}, force);
+      const f32 forceMul  = sim_pull_force(s, (SimCoordFrac){x, y + 0.5f});
+      const f32 veloDelta = deltaX / intrinsic_sqrt_f32(distSqr) * force * forceMul;
+      sim_grid_add(&s->velocitiesX, (SimCoord){x, y}, veloDelta);
     }
   }
 
@@ -342,9 +387,9 @@ static void sim_pull(SimState* s, const SimCoordFrac target, const f32 dt) {
       if (distSqr < f32_epsilon) {
         continue;
       }
-      const f32 forceMul = sim_pull_force(s, (SimCoordFrac){x + 0.5f, y});
-      const f32 force    = deltaY / intrinsic_sqrt_f32(distSqr) * s->pullForce * dt * forceMul;
-      sim_grid_add(&s->velocitiesY, (SimCoord){x, y}, force);
+      const f32 forceMul  = sim_pull_force(s, (SimCoordFrac){x + 0.5f, y});
+      const f32 veloDelta = deltaY / intrinsic_sqrt_f32(distSqr) * force * forceMul;
+      sim_grid_add(&s->velocitiesY, (SimCoord){x, y}, veloDelta);
     }
   }
 }
@@ -539,6 +584,33 @@ static void sim_solve_velocity(SimState* s, const f32 dt) {
       sim_grid_add(&s->velocitiesY, (SimCoord){x, y}, k * -(pressureTop - pressureBottom));
     }
   }
+}
+
+static bool sim_update(SimState* s, const f32 dt) {
+  if (dt < f32_epsilon || dt > 1.0f) {
+    return false;
+  }
+
+  for (u32 i = 0; i != s->emitterCount; ++i) {
+    const SimEmitter* e = &s->emitters[i];
+    sim_smoke_emit(s, e->position, e->smokeAmount * dt);
+    const f32 veloX = math_cos_f32(e->angle) * e->force * dt;
+    const f32 veloY = math_sin_f32(e->angle) * e->force * dt;
+    sim_velocity_add(s, e->position, veloX, veloY);
+  }
+
+  if (s->pull) {
+    sim_pull(s, s->pullCoord, s->pullForce * dt);
+  }
+  sim_diffuse_velocity(s, dt);
+  sim_diffuse_smoke(s, dt);
+  sim_advect_velocity(s, dt);
+  sim_advect_smoke(s, dt);
+  for (u32 i = 0; i != s->solverIterations; ++i) {
+    sim_solve_pressure(s, dt);
+  }
+  sim_solve_velocity(s, dt);
+  return true;
 }
 
 ecs_comp_define(DemoComp) {
