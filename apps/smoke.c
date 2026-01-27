@@ -327,7 +327,7 @@ static f32 sim_velocity_left(const SimState* s, const SimCoord c) {
 
 static f32 sim_velocity_right(const SimState* s, const SimCoord c) {
   const SimCoord cRight = {c.x + 1, c.y};
-  return sim_grid_get_bounded(&s->velocitiesY, cRight, 0.0f /* fallback */);
+  return sim_grid_get_bounded(&s->velocitiesX, cRight, 0.0f /* fallback */);
 }
 
 static f32 sim_velocity_x(const SimState* s, const SimCoord c) {
