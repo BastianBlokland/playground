@@ -50,10 +50,10 @@ static SimCoord sim_coord_round_down(const SimCoordFrac c) {
 }
 
 static bool sim_coord_valid(const SimCoord c, const u32 width, const u32 height) {
-  if (c.x < 0 || c.x > (i32)width) {
+  if (c.x < 0 || c.x >= (i32)width) {
     return false;
   }
-  if (c.y < 0 || c.y > (i32)height) {
+  if (c.y < 0 || c.y >= (i32)height) {
     return false;
   }
   return true;
