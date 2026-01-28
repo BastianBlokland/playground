@@ -651,8 +651,8 @@ static DemoComp* demo_create(EcsWorld* world, const u16 winWidth, const u16 winH
   sim_emitter_add(
       &demo->sim,
       (SimEmitter){
-          .angle       = 0.0f,
-          .force       = 1.0f,
+          .angle       = math_pi_f32 * 0.25f,
+          .force       = 10.0f,
           .position    = {2, 2},
           .smokeAmount = 5.0f,
       });
@@ -670,28 +670,30 @@ static f32 demo_time_to_seconds(const TimeDuration dur) {
   return (f32)((f64)dur * g_toSecMul);
 }
 
-static f32 demo_cell_size(UiCanvasComp* c, const SimGrid* g) {
+static f32 demo_cell_size(UiCanvasComp* c, const SimState* s) {
   const f32 border = 10;
-  const f32 xSize  = (ui_canvas_resolution(c).width - border * 2) / (f32)g->width;
-  const f32 ySize  = (ui_canvas_resolution(c).height - border * 2) / (f32)g->height;
+  const f32 xSize  = (ui_canvas_resolution(c).width - border * 2) / (f32)s->width;
+  const f32 ySize  = (ui_canvas_resolution(c).height - border * 2) / (f32)s->height;
   return math_min(xSize, ySize);
+}
+
+static UiVector demo_cell_origin(UiCanvasComp* c, const SimState* s, const f32 cellSize) {
+  return (UiVector){
+      ui_canvas_resolution(c).width * 0.5f - s->width * cellSize * 0.5f,
+      ui_canvas_resolution(c).height * 0.5f - s->height * cellSize * 0.5f,
+  };
 }
 
 static void demo_draw_grid(
     UiCanvasComp*  c,
     const SimGrid* g,
+    const f32      cellSize,
+    const UiVector cellOrigin,
     const f32      minVal,
     const f32      maxVal,
     const UiColor  minColor,
     const UiColor  maxColor) {
-  const f32 cellSize = demo_cell_size(c, g);
-  if (cellSize < f32_epsilon) {
-    return;
-  }
-  const UiVector cellOrgin = {
-      ui_canvas_resolution(c).width * 0.5f - g->width * cellSize * 0.5f,
-      ui_canvas_resolution(c).height * 0.5f - g->height * cellSize * 0.5f,
-  };
+
   ui_layout_push(c);
   ui_layout_resize(c, UiAlign_BottomLeft, ui_vector(cellSize, cellSize), UiBase_Absolute, Ui_XY);
   ui_style_push(c);
@@ -702,7 +704,7 @@ static void demo_draw_grid(
 
       ui_style_color(c, ui_color_lerp(minColor, maxColor, frac));
 
-      const UiVector pos = ui_vector(cellOrgin.x + x * cellSize, cellOrgin.y + y * cellSize);
+      const UiVector pos = ui_vector(cellOrigin.x + x * cellSize, cellOrigin.y + y * cellSize);
       ui_layout_set_pos(c, UiBase_Canvas, pos, UiBase_Absolute);
 
       ui_canvas_draw_glyph(c, UiShape_Square, 5, UiFlags_None);
@@ -713,7 +715,12 @@ static void demo_draw_grid(
 }
 
 static void demo_draw(UiCanvasComp* c, const SimState* s) {
-  demo_draw_grid(c, &s->smoke, 0.0f, 1.0f, ui_color_black, ui_color_white);
+  const f32      cellSize   = demo_cell_size(c, s);
+  const UiVector cellOrigin = demo_cell_origin(c, s, cellSize);
+  if (cellSize < f32_epsilon) {
+    return;
+  }
+  demo_draw_grid(c, &s->smoke, cellSize, cellOrigin, 0.0f, 1.0f, ui_color_black, ui_color_white);
 }
 
 ecs_view_define(FrameUpdateView) { ecs_access_write(RendSettingsGlobalComp); }
