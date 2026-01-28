@@ -203,7 +203,7 @@ static SimState sim_state_create(const u32 width, const u32 height) {
       .width  = width,
       .height = height,
 
-      .solverIterations  = 32,
+      .solverIterations  = 128,
       .density           = 10.0f,
       .pressureDecay     = 0.5f,
       .velocityDiffusion = 0.5f,
