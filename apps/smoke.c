@@ -658,6 +658,9 @@ static DemoComp* demo_create(EcsWorld* world, const u16 winWidth, const u16 winH
           .smokeAmount = 5.0f,
       });
 
+  sim_solid_set(&demo->sim, (SimCoord){6, 6});
+  sim_solid_set(&demo->sim, (SimCoord){7, 5});
+
   return demo;
 }
 
@@ -837,8 +840,9 @@ static void demo_draw(UiCanvasComp* c, const SimState* s) {
   if (cellSize < f32_epsilon) {
     return;
   }
-  // demo_draw_grid(c, &s->smoke, cellSize, cellOrigin, 0.0f, 1.0f, ui_color_black, ui_color_white);
-  demo_draw_grid(c, &s->pressure, cellSize, cellOrigin, -1.0f, 1.0f, ui_color_blue, ui_color_green);
+  demo_draw_grid(c, &s->smoke, cellSize, cellOrigin, 0.0f, 1.0f, ui_color_black, ui_color_white);
+  // demo_draw_grid(c, &s->pressure, cellSize, cellOrigin, -1.0f, 1.0f, ui_color_blue,
+  // ui_color_green);
   // demo_draw_velocity_edge(c, s, cellSize, cellOrigin, 0.25f);
   demo_draw_velocity_center(c, s, cellSize, cellOrigin, 0.05f);
   // demo_draw_velocity_divergence(c, s, cellSize, cellOrigin, 0.01f);
