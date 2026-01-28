@@ -612,8 +612,8 @@ static bool sim_update(SimState* s, const f32 dt) {
   sim_advect_smoke(s, dt);
   for (u32 i = 0; i != s->solverIterations; ++i) {
     sim_solve_pressure(s, dt);
+    sim_solve_velocity(s, dt);
   }
-  sim_solve_velocity(s, dt);
   return true;
 }
 
@@ -653,7 +653,7 @@ static DemoComp* demo_create(EcsWorld* world, const u16 winWidth, const u16 winH
       &demo->sim,
       (SimEmitter){
           .angle       = math_pi_f32 * 0.25f,
-          .force       = 10.0f,
+          .force       = 1000.0f,
           .position    = {2, 2},
           .smokeAmount = 5.0f,
       });
