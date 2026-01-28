@@ -804,6 +804,33 @@ static void demo_draw_velocity_center(
   ui_layout_pop(c);
 }
 
+static void demo_draw_velocity_divergence(
+    UiCanvasComp*   c,
+    const SimState* s,
+    const f32       cellSize,
+    const UiVector  cellOrigin,
+    const f32       scale) {
+
+  ui_layout_push(c);
+  ui_layout_resize(c, UiAlign_BottomLeft, ui_vector(cellSize, cellSize), UiBase_Absolute, Ui_XY);
+  ui_style_push(c);
+  for (u32 y = 0; y != s->height; ++y) {
+    for (u32 x = 0; x != s->width; ++x) {
+      const f32 v    = sim_velocity_divergence(s, (SimCoord){x, y});
+      const f32 frac = math_clamp_f32(math_abs(v) / scale, 0.0f, 1.0f);
+
+      ui_style_color(c, ui_color_lerp(ui_color_green, ui_color_red, frac));
+
+      const UiVector pos = ui_vector(cellOrigin.x + x * cellSize, cellOrigin.y + y * cellSize);
+      ui_layout_set_pos(c, UiBase_Canvas, pos, UiBase_Absolute);
+
+      ui_canvas_draw_glyph(c, UiShape_Square, 5, UiFlags_None);
+    }
+  }
+  ui_style_pop(c);
+  ui_layout_pop(c);
+}
+
 static void demo_draw(UiCanvasComp* c, const SimState* s) {
   const f32      cellSize   = demo_cell_size(c, s);
   const UiVector cellOrigin = demo_cell_origin(c, s, cellSize);
@@ -812,7 +839,8 @@ static void demo_draw(UiCanvasComp* c, const SimState* s) {
   }
   demo_draw_grid(c, &s->smoke, cellSize, cellOrigin, 0.0f, 1.0f, ui_color_black, ui_color_white);
   // demo_draw_velocity_edge(c, s, cellSize, cellOrigin, 0.25f);
-  demo_draw_velocity_center(c, s, cellSize, cellOrigin, 0.25f);
+  demo_draw_velocity_center(c, s, cellSize, cellOrigin, 0.05f);
+  // demo_draw_velocity_divergence(c, s, cellSize, cellOrigin, 0.01f);
 }
 
 ecs_view_define(FrameUpdateView) { ecs_access_write(RendSettingsGlobalComp); }
