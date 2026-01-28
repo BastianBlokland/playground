@@ -221,6 +221,13 @@ void ui_layout_set_pos(
   ui_cmd_push_rect_pos(cmdBuffer, parent, pos, units, Ui_XY);
 }
 
+void ui_layout_set_center(
+    UiCanvasComp* canvas, const UiBase parent, const UiVector pos, const UiBase units) {
+  UiCmdBuffer* cmdBuffer = ui_canvas_cmd_buffer(canvas);
+  ui_cmd_push_rect_pos(cmdBuffer, parent, pos, units, Ui_XY);
+  ui_cmd_push_rect_pos(cmdBuffer, UiBase_Current, ui_vector(-0.5f, -0.5f), UiBase_Current, Ui_XY);
+}
+
 void ui_layout_inner(
     UiCanvasComp*  canvas,
     const UiBase   parent,
