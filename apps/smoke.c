@@ -645,8 +645,8 @@ static DemoComp* demo_create(EcsWorld* world, const u16 winWidth, const u16 winH
 
   rend_settings_window_init(world, demo->window)->flags |= RendFlags_2D;
 
-  const u32 simWidth  = 25;
-  const u32 simHeight = 25;
+  const u32 simWidth  = 50;
+  const u32 simHeight = 35;
   demo->sim           = sim_state_create(simWidth, simHeight);
 
   sim_emitter_add(
@@ -957,8 +957,8 @@ bool app_ecs_init(EcsWorld* world, const CliInvocation* invoc) {
   rend_settings_global_init(world, false /* devSupport */);
   ui_settings_global_init(world);
 
-  const u16 windowWidth  = (u16)cli_read_u64(invoc, g_optWidth, 1200);
-  const u16 windowHeight = (u16)cli_read_u64(invoc, g_optHeight, 1200);
+  const u16 windowWidth  = (u16)cli_read_u64(invoc, g_optWidth, 1400);
+  const u16 windowHeight = (u16)cli_read_u64(invoc, g_optHeight, 1000);
 
   demo_create(world, windowWidth, windowHeight);
 
