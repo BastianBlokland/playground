@@ -718,6 +718,50 @@ static void demo_draw_grid(
   ui_layout_pop(c);
 }
 
+static void demo_draw_grid_sampled(
+    UiCanvasComp*  c,
+    const SimGrid* g,
+    const f32      cellSize,
+    const UiVector cellOrigin,
+    const f32      minVal,
+    const f32      maxVal,
+    const UiColor  minColor,
+    const UiColor  maxColor,
+    const u32      density) {
+
+  const u32 stepsX          = g->width * density;
+  const u32 stepsY          = g->height * density;
+  const f32 sampledCellSize = cellSize / density;
+
+  ui_layout_push(c);
+  ui_layout_resize(
+      c,
+      UiAlign_BottomLeft,
+      ui_vector(sampledCellSize + 1, sampledCellSize + 1),
+      UiBase_Absolute,
+      Ui_XY);
+  ui_style_push(c);
+  ui_style_outline(c, 0);
+  for (u32 y = 0; y != stepsY; ++y) {
+    const f32 fracY = ((f32)y / (f32)(stepsY - 1)) * (g->height - 1);
+    for (u32 x = 0; x != stepsX; ++x) {
+      const f32 fracX = ((f32)x / (f32)(stepsX - 1)) * (g->width - 1);
+      const f32 v     = sim_grid_sample(g, (SimCoordFrac){fracX, fracY}, 0.0f);
+      const f32 frac  = math_clamp_f32(math_unlerp(minVal, maxVal, v), 0.0f, 1.0f);
+
+      ui_style_color(c, ui_color_lerp(minColor, maxColor, frac));
+
+      const UiVector pos =
+          ui_vector(cellOrigin.x + x * sampledCellSize, cellOrigin.y + y * sampledCellSize);
+      ui_layout_set_pos(c, UiBase_Canvas, pos, UiBase_Absolute);
+
+      ui_canvas_draw_glyph(c, UiShape_Square, 5, UiFlags_None);
+    }
+  }
+  ui_style_pop(c);
+  ui_layout_pop(c);
+}
+
 static void demo_draw_velocity_edge(
     UiCanvasComp*   c,
     const SimState* s,
@@ -894,14 +938,16 @@ static void demo_draw(UiCanvasComp* c, const SimState* s) {
   if (cellSize < f32_epsilon) {
     return;
   }
-  demo_draw_grid(c, &s->smoke, cellSize, cellOrigin, 0.0f, 1.0f, ui_color_black, ui_color_white);
+  // demo_draw_grid(c, &s->smoke, cellSize, cellOrigin, 0.0f, 0.1f, ui_color_black, ui_color_white);
+  demo_draw_grid_sampled(
+      c, &s->smoke, cellSize, cellOrigin, 0.0f, 0.1f, ui_color_black, ui_color_white, 4);
   // demo_draw_grid(c, &s->pressure, cellSize, cellOrigin, -1.0f, 1.0f, ui_color_blue,
   // ui_color_green);
   // demo_draw_velocity_edge(c, s, cellSize, cellOrigin, 0.05f);
   // demo_draw_velocity_divergence(c, s, cellSize, cellOrigin, 0.01f);
-  //   demo_draw_velocity_color(c, s, cellSize, cellOrigin, 25.0f);
   demo_draw_solid(c, s, cellSize, cellOrigin, ui_color_purple);
-  demo_draw_velocity_center(c, s, cellSize, cellOrigin, 0.05f);
+  // demo_draw_velocity_color(c, s, cellSize, cellOrigin, 25.0f);
+  // demo_draw_velocity_center(c, s, cellSize, cellOrigin, 0.05f);
 }
 
 ecs_view_define(FrameUpdateView) { ecs_access_write(RendSettingsGlobalComp); }
