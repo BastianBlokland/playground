@@ -122,7 +122,7 @@ void main() {
   out_invCanvasScale = invCanvasScale;
   out_clipRect       = u_meta.clipRects[clipId];
   out_texMeta        = f32v3(texOrigin, atlas_entry_size(atlasMeta));
-  out_color          = atomColor;
+  out_color          = f32v4(color_from_srgb(atomColor.rgb), atomColor.a);
   out_aspectRatio    = atomSize.x / atomSize.y;
   out_cornerFrac     = cornerFrac;
 
