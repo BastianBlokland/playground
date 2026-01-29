@@ -630,12 +630,25 @@ static bool sim_update(SimState* s, const f32 dt) {
 }
 
 typedef enum {
-  DemoCellLabel_Smoke,
-  DemoCellLabel_Pressure,
-  DemoCellLabel_Speed,
-  DemoCellLabel_Angle,
-  DemoCellLabel_Divergence,
-} DemoCellLabel;
+  DemoLabel_None,
+  DemoLabel_Smoke,
+  DemoLabel_Pressure,
+  DemoLabel_Speed,
+  DemoLabel_Angle,
+  DemoLabel_Divergence,
+
+  DemoLabel_Count,
+} DemoLabel;
+
+static const String g_demoLabelNames[] = {
+    string_static("None"),
+    string_static("Smoke"),
+    string_static("Pressure"),
+    string_static("Speed"),
+    string_static("Angle"),
+    string_static("Divergence"),
+};
+ASSERT(array_elems(g_demoLabelNames) == DemoLabel_Count, "Incorrect number of names");
 
 ecs_comp_define(DemoComp) {
   EcsEntityId window;
@@ -643,6 +656,8 @@ ecs_comp_define(DemoComp) {
   TimeSteady  lastTime;
 
   SimState sim;
+
+  DemoLabel label;
 };
 
 static EcsEntityId demo_create_window(EcsWorld* world, const u16 width, const u16 height) {
@@ -665,8 +680,8 @@ static DemoComp* demo_create(EcsWorld* world, const u16 winWidth, const u16 winH
 
   rend_settings_window_init(world, demo->window)->flags |= RendFlags_2D;
 
-  const u32 simWidth  = 50;
-  const u32 simHeight = 35;
+  const u32 simWidth  = 40;
+  const u32 simHeight = 30;
   demo->sim           = sim_state_create(simWidth, simHeight);
 
   sim_emitter_add(
@@ -954,11 +969,15 @@ static void demo_draw_solid(
 }
 
 static void demo_draw_label(
-    UiCanvasComp*       c,
-    const SimState*     s,
-    const f32           cellSize,
-    const UiVector      cellOrigin,
-    const DemoCellLabel label) {
+    UiCanvasComp*   c,
+    const SimState* s,
+    const f32       cellSize,
+    const UiVector  cellOrigin,
+    const DemoLabel label) {
+
+  if (label == DemoLabel_None) {
+    return;
+  }
 
   u8        textBuffer[32];
   DynString textStr = dynstring_create_over(mem_var(textBuffer));
@@ -978,21 +997,24 @@ static void demo_draw_label(
 
       dynstring_clear(&textStr);
       switch (label) {
-      case DemoCellLabel_Smoke:
+      case DemoLabel_Smoke:
         format_write_f64(&textStr, sim_smoke(s, coord), &floatOpts);
         break;
-      case DemoCellLabel_Pressure:
+      case DemoLabel_Pressure:
         format_write_f64(&textStr, sim_pressure(s, coord), &floatOpts);
         break;
-      case DemoCellLabel_Speed:
+      case DemoLabel_Speed:
         format_write_f64(&textStr, sim_speed(s, coord), &floatOpts);
         break;
-      case DemoCellLabel_Angle:
+      case DemoLabel_Angle:
         format_write_f64(&textStr, sim_angle(s, coord), &floatOpts);
         break;
-      case DemoCellLabel_Divergence:
+      case DemoLabel_Divergence:
         format_write_f64(&textStr, sim_velocity_divergence(s, coord), &floatOpts);
         break;
+      case DemoLabel_None:
+      case DemoLabel_Count:
+        UNREACHABLE;
       }
       ui_canvas_draw_text(c, dynstring_view(&textStr), 8, UiAlign_MiddleCenter, UiFlags_None);
     }
@@ -1001,23 +1023,53 @@ static void demo_draw_label(
   ui_layout_pop(c);
 }
 
-static void demo_draw(UiCanvasComp* c, const SimState* s) {
-  const f32      cellSize   = demo_cell_size(c, s);
-  const UiVector cellOrigin = demo_cell_origin(c, s, cellSize);
+static void demo_draw(UiCanvasComp* c, DemoComp* d) {
+  const f32      cellSize   = demo_cell_size(c, &d->sim);
+  const UiVector cellOrigin = demo_cell_origin(c, &d->sim, cellSize);
   if (cellSize < f32_epsilon) {
     return;
   }
   // demo_draw_grid(c, &s->smoke, cellSize, cellOrigin, 0.0f, 0.1f, ui_color_black, ui_color_white);
   demo_draw_grid_sampled(
-      c, &s->smoke, cellSize, cellOrigin, 0.0f, 0.1f, ui_color_black, ui_color_white, 4);
+      c, &d->sim.smoke, cellSize, cellOrigin, 0.0f, 0.1f, ui_color_black, ui_color_white, 4);
   // demo_draw_grid(c, &s->pressure, cellSize, cellOrigin, -1.0f, 1.0f, ui_color_blue,
   // ui_color_green);
   // demo_draw_velocity_edge(c, s, cellSize, cellOrigin, 0.05f);
   // demo_draw_velocity_divergence(c, s, cellSize, cellOrigin, 0.01f);
-  demo_draw_solid(c, s, cellSize, cellOrigin, ui_color_aqua);
+  demo_draw_solid(c, &d->sim, cellSize, cellOrigin, ui_color_gray);
   // demo_draw_velocity_color(c, s, cellSize, cellOrigin, 25.0f);
   // demo_draw_velocity_center(c, s, cellSize, cellOrigin, 0.05f);
-  demo_draw_label(c, s, cellSize, cellOrigin, DemoCellLabel_Pressure);
+  demo_draw_label(c, &d->sim, cellSize, cellOrigin, d->label);
+}
+
+static void demo_menu_frame(UiCanvasComp* c) {
+  ui_style_push(c);
+  ui_style_outline(c, 5);
+  ui_style_color(c, ui_color(0, 0, 0, 200));
+  ui_canvas_draw_glyph(c, UiShape_Circle, 10, UiFlags_None);
+  ui_style_pop(c);
+}
+
+static void demo_menu_select(
+    UiCanvasComp* c, const String label, i32* value, const String* options, const u32 optionCount) {
+  demo_menu_frame(c);
+  ui_layout_push(c);
+  static const UiVector g_frameInset = {-30, -20};
+  ui_layout_grow(c, UiAlign_MiddleCenter, g_frameInset, UiBase_Absolute, Ui_XY);
+  ui_label(c, label);
+  ui_layout_inner(c, UiBase_Current, UiAlign_MiddleRight, ui_vector(0.55f, 1), UiBase_Current);
+  ui_select(c, value, options, optionCount);
+  ui_layout_pop(c);
+}
+
+static void demo_menu(UiCanvasComp* c, DemoComp* d) {
+  const UiVector size    = {250, 40};
+  const UiVector spacing = {5, 5};
+
+  ui_layout_inner(c, UiBase_Canvas, UiAlign_BottomLeft, size, UiBase_Absolute);
+  ui_layout_move(c, ui_vector(spacing.x, spacing.y), UiBase_Absolute, Ui_XY);
+
+  demo_menu_select(c, string_lit("Label"), (i32*)&d->label, g_demoLabelNames, DemoLabel_Count);
 }
 
 ecs_view_define(FrameUpdateView) { ecs_access_write(RendSettingsGlobalComp); }
@@ -1066,7 +1118,8 @@ ecs_system_define(DemoUpdateSys) {
     if (ecs_view_maybe_jump(canvasItr, demo->uiCanvas)) {
       UiCanvasComp* uiCanvas = ecs_view_write_t(canvasItr, UiCanvasComp);
       ui_canvas_reset(uiCanvas);
-      demo_draw(uiCanvas, &demo->sim);
+      demo_draw(uiCanvas, demo);
+      demo_menu(uiCanvas, demo);
     }
   }
 }
@@ -1162,8 +1215,8 @@ bool app_ecs_init(EcsWorld* world, const CliInvocation* invoc) {
   rend_settings_global_init(world, false /* devSupport */);
   ui_settings_global_init(world);
 
-  const u16 windowWidth  = (u16)cli_read_u64(invoc, g_optWidth, 1400);
-  const u16 windowHeight = (u16)cli_read_u64(invoc, g_optHeight, 1000);
+  const u16 windowWidth  = (u16)cli_read_u64(invoc, g_optWidth, 1600);
+  const u16 windowHeight = (u16)cli_read_u64(invoc, g_optHeight, 1200);
 
   demo_create(world, windowWidth, windowHeight);
 
