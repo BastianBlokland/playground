@@ -1099,7 +1099,7 @@ static void demo_menu_select(
 
 static void demo_menu(UiCanvasComp* c, DemoComp* d) {
   const UiVector size    = {250, 40};
-  const UiVector spacing = {5, 5};
+  const UiVector spacing = {10, 10};
 
   ui_layout_inner(c, UiBase_Canvas, UiAlign_BottomLeft, size, UiBase_Absolute);
   ui_layout_move(c, ui_vector(spacing.x, spacing.y), UiBase_Absolute, Ui_XY);
