@@ -557,7 +557,8 @@ static void sim_solve_pressure(SimState* s, const f32 dt) {
         const f32 velDelta  = velRight - velLeft + velTop - velBottom;
 
         newPressure = (pressureSum - s->density * velDelta / dt) / flowCount;
-        newPressure -= newPressure * s->density * s->pressureDecay * dt;
+        newPressure -= newPressure * math_min(0.f, s->density * s->pressureDecay * dt);
+        diag_assert(!float_isnan(newPressure) && !float_isinf(newPressure));
       }
       sim_grid_set(&s->pressure, (SimCoord){x, y}, newPressure);
     }
