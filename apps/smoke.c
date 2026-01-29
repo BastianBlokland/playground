@@ -8,8 +8,10 @@
 #include "core/alloc.h"
 #include "core/bits.h"
 #include "core/diag.h"
+#include "core/dynstring.h"
 #include "core/file.h"
 #include "core/float.h"
+#include "core/format.h"
 #include "core/intrinsic.h"
 #include "core/math.h"
 #include "core/rng.h"
@@ -354,6 +356,15 @@ static f32 sim_speed(const SimState* s, const SimCoord c) {
   return speedSqr != 0.0f ? intrinsic_sqrt_f32(speedSqr) : 0.0f;
 }
 
+static f32 sim_angle(const SimState* s, const SimCoord c) {
+  const f32 vX = sim_velocity_x(s, c);
+  const f32 vY = sim_velocity_y(s, c);
+  if (math_abs(vX) < f32_epsilon && math_abs(vY) < f32_epsilon) {
+    return 0.0f;
+  }
+  return math_atan2_f32(vY, vX);
+}
+
 static bool sim_pushed(const SimState* s, const SimCoord c) {
   return s->push && sim_coord_dist_manhattan(s->pushCoord, c) <= 1;
 }
@@ -616,6 +627,14 @@ static bool sim_update(SimState* s, const f32 dt) {
   }
   return true;
 }
+
+typedef enum {
+  DemoCellLabel_Smoke,
+  DemoCellLabel_Pressure,
+  DemoCellLabel_Speed,
+  DemoCellLabel_Angle,
+  DemoCellLabel_Divergence,
+} DemoCellLabel;
 
 ecs_comp_define(DemoComp) {
   EcsEntityId window;
@@ -932,6 +951,54 @@ static void demo_draw_solid(
   ui_layout_pop(c);
 }
 
+static void demo_draw_label(
+    UiCanvasComp*       c,
+    const SimState*     s,
+    const f32           cellSize,
+    const UiVector      cellOrigin,
+    const DemoCellLabel label) {
+
+  u8        textBuffer[32];
+  DynString textStr = dynstring_create_over(mem_var(textBuffer));
+
+  const FormatOptsFloat floatOpts = format_opts_float(
+          .minDecDigits = 2, .maxDecDigits = 2, .expThresholdPos = f64_max, .expThresholdNeg = 0);
+
+  ui_layout_push(c);
+  ui_layout_resize(c, UiAlign_BottomLeft, ui_vector(cellSize, cellSize), UiBase_Absolute, Ui_XY);
+  ui_style_push(c);
+  ui_style_variation(c, UiVariation_Monospace);
+  for (u32 y = 0; y != s->height; ++y) {
+    for (u32 x = 0; x != s->width; ++x) {
+      const SimCoord coord = {x, y};
+      const UiVector pos   = ui_vector(cellOrigin.x + x * cellSize, cellOrigin.y + y * cellSize);
+      ui_layout_set_pos(c, UiBase_Canvas, pos, UiBase_Absolute);
+
+      dynstring_clear(&textStr);
+      switch (label) {
+      case DemoCellLabel_Smoke:
+        format_write_f64(&textStr, sim_smoke(s, coord), &floatOpts);
+        break;
+      case DemoCellLabel_Pressure:
+        format_write_f64(&textStr, sim_pressure(s, coord), &floatOpts);
+        break;
+      case DemoCellLabel_Speed:
+        format_write_f64(&textStr, sim_speed(s, coord), &floatOpts);
+        break;
+      case DemoCellLabel_Angle:
+        format_write_f64(&textStr, sim_angle(s, coord), &floatOpts);
+        break;
+      case DemoCellLabel_Divergence:
+        format_write_f64(&textStr, sim_velocity_divergence(s, coord), &floatOpts);
+        break;
+      }
+      ui_canvas_draw_text(c, dynstring_view(&textStr), 8, UiAlign_MiddleCenter, UiFlags_None);
+    }
+  }
+  ui_style_pop(c);
+  ui_layout_pop(c);
+}
+
 static void demo_draw(UiCanvasComp* c, const SimState* s) {
   const f32      cellSize   = demo_cell_size(c, s);
   const UiVector cellOrigin = demo_cell_origin(c, s, cellSize);
@@ -948,6 +1015,7 @@ static void demo_draw(UiCanvasComp* c, const SimState* s) {
   demo_draw_solid(c, s, cellSize, cellOrigin, ui_color_purple);
   // demo_draw_velocity_color(c, s, cellSize, cellOrigin, 25.0f);
   // demo_draw_velocity_center(c, s, cellSize, cellOrigin, 0.05f);
+  demo_draw_label(c, s, cellSize, cellOrigin, DemoCellLabel_Pressure);
 }
 
 ecs_view_define(FrameUpdateView) { ecs_access_write(RendSettingsGlobalComp); }
