@@ -864,6 +864,30 @@ static void demo_draw_velocity_color(
   ui_layout_pop(c);
 }
 
+static void demo_draw_solid(
+    UiCanvasComp*   c,
+    const SimState* s,
+    const f32       cellSize,
+    const UiVector  cellOrigin,
+    const UiColor   color) {
+
+  ui_layout_push(c);
+  ui_layout_resize(c, UiAlign_BottomLeft, ui_vector(cellSize, cellSize), UiBase_Absolute, Ui_XY);
+  ui_style_push(c);
+  ui_style_color(c, color);
+  for (u32 y = 0; y != s->height; ++y) {
+    for (u32 x = 0; x != s->width; ++x) {
+      if (sim_solid(s, (SimCoord){x, y})) {
+        const UiVector pos = ui_vector(cellOrigin.x + x * cellSize, cellOrigin.y + y * cellSize);
+        ui_layout_set_pos(c, UiBase_Canvas, pos, UiBase_Absolute);
+        ui_canvas_draw_glyph(c, UiShape_Square, 5, UiFlags_None);
+      }
+    }
+  }
+  ui_style_pop(c);
+  ui_layout_pop(c);
+}
+
 static void demo_draw(UiCanvasComp* c, const SimState* s) {
   const f32      cellSize   = demo_cell_size(c, s);
   const UiVector cellOrigin = demo_cell_origin(c, s, cellSize);
@@ -876,6 +900,7 @@ static void demo_draw(UiCanvasComp* c, const SimState* s) {
   // demo_draw_velocity_edge(c, s, cellSize, cellOrigin, 0.05f);
   // demo_draw_velocity_divergence(c, s, cellSize, cellOrigin, 0.01f);
   //   demo_draw_velocity_color(c, s, cellSize, cellOrigin, 25.0f);
+  demo_draw_solid(c, s, cellSize, cellOrigin, ui_color_purple);
   demo_draw_velocity_center(c, s, cellSize, cellOrigin, 0.05f);
 }
 
