@@ -630,6 +630,25 @@ static bool sim_update(SimState* s, const f32 dt) {
 }
 
 typedef enum {
+  DemoLayer_SmokeInterp,
+  DemoLayer_Smoke,
+  DemoLayer_Pressure,
+  DemoLayer_Velocity,
+  DemoLayer_Divergence,
+
+  DemoLayer_Count,
+} DemoLayer;
+
+static const String g_demoLayerNames[] = {
+    string_static("SmokeInterp"),
+    string_static("Smoke"),
+    string_static("Pressure"),
+    string_static("Velocity"),
+    string_static("Divergence"),
+};
+ASSERT(array_elems(g_demoLayerNames) == DemoLayer_Count, "Incorrect number of names");
+
+typedef enum {
   DemoLabel_None,
   DemoLabel_Smoke,
   DemoLabel_Pressure,
@@ -657,6 +676,7 @@ ecs_comp_define(DemoComp) {
 
   SimState sim;
 
+  DemoLayer layer;
   DemoLabel label;
 };
 
@@ -1029,15 +1049,30 @@ static void demo_draw(UiCanvasComp* c, DemoComp* d) {
   if (cellSize < f32_epsilon) {
     return;
   }
-  // demo_draw_grid(c, &s->smoke, cellSize, cellOrigin, 0.0f, 0.1f, ui_color_black, ui_color_white);
-  demo_draw_grid_sampled(
-      c, &d->sim.smoke, cellSize, cellOrigin, 0.0f, 0.1f, ui_color_black, ui_color_white, 4);
-  // demo_draw_grid(c, &s->pressure, cellSize, cellOrigin, -1.0f, 1.0f, ui_color_blue,
-  // ui_color_green);
+  switch (d->layer) {
+  case DemoLayer_SmokeInterp:
+    demo_draw_grid_sampled(
+        c, &d->sim.smoke, cellSize, cellOrigin, 0.0f, 0.1f, ui_color_black, ui_color_white, 4);
+    break;
+  case DemoLayer_Smoke:
+    demo_draw_grid(
+        c, &d->sim.smoke, cellSize, cellOrigin, 0.0f, 0.1f, ui_color_black, ui_color_white);
+    break;
+  case DemoLayer_Pressure:
+    demo_draw_grid(
+        c, &d->sim.pressure, cellSize, cellOrigin, -1.0f, 1.0f, ui_color_blue, ui_color_green);
+    break;
+  case DemoLayer_Velocity:
+    demo_draw_velocity_color(c, &d->sim, cellSize, cellOrigin, 25.0f);
+    break;
+  case DemoLayer_Divergence:
+    demo_draw_velocity_divergence(c, &d->sim, cellSize, cellOrigin, 0.01f);
+    break;
+  case DemoLayer_Count:
+    UNREACHABLE
+  }
+  demo_draw_solid(c, &d->sim, cellSize, cellOrigin, ui_color_purple);
   // demo_draw_velocity_edge(c, s, cellSize, cellOrigin, 0.05f);
-  // demo_draw_velocity_divergence(c, s, cellSize, cellOrigin, 0.01f);
-  demo_draw_solid(c, &d->sim, cellSize, cellOrigin, ui_color_gray);
-  // demo_draw_velocity_color(c, s, cellSize, cellOrigin, 25.0f);
   // demo_draw_velocity_center(c, s, cellSize, cellOrigin, 0.05f);
   demo_draw_label(c, &d->sim, cellSize, cellOrigin, d->label);
 }
@@ -1057,7 +1092,7 @@ static void demo_menu_select(
   static const UiVector g_frameInset = {-30, -20};
   ui_layout_grow(c, UiAlign_MiddleCenter, g_frameInset, UiBase_Absolute, Ui_XY);
   ui_label(c, label);
-  ui_layout_inner(c, UiBase_Current, UiAlign_MiddleRight, ui_vector(0.55f, 1), UiBase_Current);
+  ui_layout_inner(c, UiBase_Current, UiAlign_MiddleRight, ui_vector(0.6f, 1), UiBase_Current);
   ui_select(c, value, options, optionCount);
   ui_layout_pop(c);
 }
@@ -1070,6 +1105,8 @@ static void demo_menu(UiCanvasComp* c, DemoComp* d) {
   ui_layout_move(c, ui_vector(spacing.x, spacing.y), UiBase_Absolute, Ui_XY);
 
   demo_menu_select(c, string_lit("Label"), (i32*)&d->label, g_demoLabelNames, DemoLabel_Count);
+  ui_layout_next(c, Ui_Up, spacing.y);
+  demo_menu_select(c, string_lit("Layer"), (i32*)&d->layer, g_demoLayerNames, DemoLayer_Count);
 }
 
 ecs_view_define(FrameUpdateView) { ecs_access_write(RendSettingsGlobalComp); }
