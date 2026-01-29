@@ -939,12 +939,13 @@ static void demo_draw_solid(
   ui_layout_resize(c, UiAlign_BottomLeft, ui_vector(cellSize, cellSize), UiBase_Absolute, Ui_XY);
   ui_style_push(c);
   ui_style_color(c, color);
+  ui_style_outline(c, 2);
   for (u32 y = 0; y != s->height; ++y) {
     for (u32 x = 0; x != s->width; ++x) {
       if (sim_solid(s, (SimCoord){x, y})) {
         const UiVector pos = ui_vector(cellOrigin.x + x * cellSize, cellOrigin.y + y * cellSize);
         ui_layout_set_pos(c, UiBase_Canvas, pos, UiBase_Absolute);
-        ui_canvas_draw_glyph(c, UiShape_Square, 5, UiFlags_None);
+        ui_canvas_draw_glyph(c, UiShape_Circle, 4, UiFlags_None);
       }
     }
   }
@@ -1013,7 +1014,7 @@ static void demo_draw(UiCanvasComp* c, const SimState* s) {
   // ui_color_green);
   // demo_draw_velocity_edge(c, s, cellSize, cellOrigin, 0.05f);
   // demo_draw_velocity_divergence(c, s, cellSize, cellOrigin, 0.01f);
-  demo_draw_solid(c, s, cellSize, cellOrigin, ui_color_purple);
+  demo_draw_solid(c, s, cellSize, cellOrigin, ui_color_aqua);
   // demo_draw_velocity_color(c, s, cellSize, cellOrigin, 25.0f);
   // demo_draw_velocity_center(c, s, cellSize, cellOrigin, 0.05f);
   demo_draw_label(c, s, cellSize, cellOrigin, DemoCellLabel_Pressure);
