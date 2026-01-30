@@ -1148,10 +1148,21 @@ static void demo_menu_select_bits(
   ui_layout_pop(c);
 }
 
-static void demo_menu(UiCanvasComp* c, DemoComp* d) {
+typedef enum {
+  DemoMenuAction_None,
+  DemoMenuAction_Quit,
+} DemoMenuAction;
+
+static DemoMenuAction demo_menu(UiCanvasComp* c, DemoComp* d) {
+  DemoMenuAction action = 0;
+
   ui_layout_inner(c, UiBase_Canvas, UiAlign_BottomLeft, g_demoMenuSize, UiBase_Absolute);
   ui_layout_move(c, g_demoMenuSpacing, UiBase_Absolute, Ui_XY);
 
+  if (ui_button(c, .label = string_lit("Quit"))) {
+    action = DemoMenuAction_Quit;
+  }
+  ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
   if (ui_button(c, .label = string_lit("Reset"))) {
     sim_clear(&d->sim);
   }
@@ -1162,6 +1173,8 @@ static void demo_menu(UiCanvasComp* c, DemoComp* d) {
       c, string_lit("Overlay"), bitset_from_var(d->overlay), g_demoOverlayNames, DemoOverlay_Count);
   ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
   demo_menu_select(c, string_lit("Layer"), (i32*)&d->layer, g_demoLayerNames, DemoLayer_Count);
+
+  return action;
 }
 
 ecs_view_define(FrameUpdateView) { ecs_access_write(RendSettingsGlobalComp); }
@@ -1216,7 +1229,13 @@ ecs_system_define(DemoUpdateSys) {
       demo_draw(uiCanvas, demo);
       ui_canvas_id_block_next(uiCanvas);
       if (!demo->hideMenu) {
-        demo_menu(uiCanvas, demo);
+        switch (demo_menu(uiCanvas, demo)) {
+        case DemoMenuAction_None:
+          break;
+        case DemoMenuAction_Quit:
+          gap_window_close(winComp);
+          break;
+        }
       }
     }
   }
