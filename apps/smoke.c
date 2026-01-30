@@ -1150,6 +1150,7 @@ static void demo_menu_select_bits(
 
 typedef enum {
   DemoMenuAction_None,
+  DemoMenuAction_FullscreenToggle,
   DemoMenuAction_Quit,
 } DemoMenuAction;
 
@@ -1161,6 +1162,10 @@ static DemoMenuAction demo_menu(UiCanvasComp* c, DemoComp* d) {
 
   if (ui_button(c, .label = string_lit("Quit"))) {
     action = DemoMenuAction_Quit;
+  }
+  ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
+  if (ui_button(c, .label = string_lit("Fullscreen"))) {
+    action = DemoMenuAction_FullscreenToggle;
   }
   ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
   if (ui_button(c, .label = string_lit("Reset"))) {
@@ -1175,6 +1180,19 @@ static DemoMenuAction demo_menu(UiCanvasComp* c, DemoComp* d) {
   demo_menu_select(c, string_lit("Layer"), (i32*)&d->layer, g_demoLayerNames, DemoLayer_Count);
 
   return action;
+}
+
+static void demo_fullscreen_toggle(GapWindowComp* w) {
+  if (gap_window_mode(w) == GapWindowMode_Fullscreen) {
+    log_i("Enter windowed mode");
+    const GapVector size = gap_window_param(w, GapParam_WindowSizePreFullscreen);
+    gap_window_resize(w, size, GapWindowMode_Windowed);
+    gap_window_flags_unset(w, GapWindowFlags_CursorConfine);
+  } else {
+    log_i("Enter fullscreen mode");
+    gap_window_resize(w, gap_vector(0, 0), GapWindowMode_Fullscreen);
+    gap_window_flags_set(w, GapWindowFlags_CursorConfine);
+  }
 }
 
 ecs_view_define(FrameUpdateView) { ecs_access_write(RendSettingsGlobalComp); }
@@ -1244,6 +1262,9 @@ ecs_system_define(DemoUpdateSys) {
       if (!demo->hideMenu) {
         switch (demo_menu(uiCanvas, demo)) {
         case DemoMenuAction_None:
+          break;
+        case DemoMenuAction_FullscreenToggle:
+          demo_fullscreen_toggle(winComp);
           break;
         case DemoMenuAction_Quit:
           gap_window_close(winComp);
