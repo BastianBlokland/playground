@@ -656,15 +656,17 @@ ASSERT(array_elems(g_demoLayerNames) == DemoLayer_Count, "Incorrect number of na
 
 typedef enum {
   DemoOverlay_Solid      = 1 << 0,
-  DemoOverlay_Velo       = 1 << 1,
-  DemoOverlay_VeloCenter = 1 << 2,
+  DemoOverlay_Emitter    = 1 << 1,
+  DemoOverlay_Velo       = 1 << 2,
+  DemoOverlay_VeloCenter = 1 << 3,
 
-  DemoOverlay_Count   = 3,
-  DemoOverlay_Default = DemoOverlay_Solid,
+  DemoOverlay_Count   = 4,
+  DemoOverlay_Default = DemoOverlay_Solid | DemoOverlay_Emitter,
 } DemoOverlay;
 
 static const String g_demoOverlayNames[] = {
     string_static("Solid"),
+    string_static("Emitter"),
     string_static("Velo"),
     string_static("Velo Center"),
 };
@@ -1013,6 +1015,29 @@ static void demo_draw_solid(
   ui_layout_pop(c);
 }
 
+static void demo_draw_emitters(
+    UiCanvasComp* c, const SimState* s, const f32 cellSize, const UiVector cellOrigin) {
+
+  ui_layout_push(c);
+  ui_layout_resize(c, UiAlign_BottomLeft, ui_vector(cellSize, cellSize), UiBase_Absolute, Ui_XY);
+
+  ui_style_push(c);
+  ui_style_outline(c, 3);
+
+  for (u32 i = 0; i != s->emitterCount; ++i) {
+    const SimEmitter* emitter = &s->emitters[i];
+    const UiVector    pos     = {
+        cellOrigin.x + emitter->position.x * cellSize,
+        cellOrigin.y + emitter->position.y * cellSize,
+    };
+    ui_layout_set_pos(c, UiBase_Canvas, pos, UiBase_Absolute);
+    ui_canvas_draw_glyph_rotated(c, UiShape_ExpandLess, 0, emitter->angle, UiFlags_None);
+  }
+
+  ui_style_pop(c);
+  ui_layout_pop(c);
+}
+
 static void demo_draw_label(
     UiCanvasComp*   c,
     const SimState* s,
@@ -1098,6 +1123,9 @@ static void demo_draw(UiCanvasComp* c, DemoComp* d) {
   }
   if (d->overlay & DemoOverlay_Solid) {
     demo_draw_solid(c, &d->sim, cellSize, cellOrigin, ui_color_purple);
+  }
+  if (d->overlay & DemoOverlay_Emitter) {
+    demo_draw_emitters(c, &d->sim, cellSize, cellOrigin);
   }
   if (d->overlay & DemoOverlay_Velo) {
     demo_draw_velocity_edge(c, &d->sim, cellSize, cellOrigin, 0.05f);
