@@ -655,13 +655,16 @@ static const String g_demoLayerNames[] = {
 ASSERT(array_elems(g_demoLayerNames) == DemoLayer_Count, "Incorrect number of names");
 
 typedef enum {
-  DemoOverlay_Velo       = 1 << 0,
-  DemoOverlay_VeloCenter = 1 << 1,
+  DemoOverlay_Solid      = 1 << 0,
+  DemoOverlay_Velo       = 1 << 1,
+  DemoOverlay_VeloCenter = 1 << 2,
 
-  DemoOverlay_Count = 2,
+  DemoOverlay_Count   = 3,
+  DemoOverlay_Default = DemoOverlay_Solid,
 } DemoOverlay;
 
 static const String g_demoOverlayNames[] = {
+    string_static("Solid"),
     string_static("Velo"),
     string_static("Velo Center"),
 };
@@ -718,6 +721,7 @@ static DemoComp* demo_create(EcsWorld* world, const u16 winWidth, const u16 winH
 
   demo->window   = demo_create_window(world, winWidth, winHeight);
   demo->uiCanvas = ui_canvas_create(world, demo->window, UiCanvasCreateFlags_ToBack);
+  demo->overlay  = DemoOverlay_Default;
 
   rend_settings_window_init(world, demo->window)->flags |= RendFlags_2D;
 
@@ -1092,7 +1096,9 @@ static void demo_draw(UiCanvasComp* c, DemoComp* d) {
   case DemoLayer_Count:
     UNREACHABLE
   }
-  demo_draw_solid(c, &d->sim, cellSize, cellOrigin, ui_color_purple);
+  if (d->overlay & DemoOverlay_Solid) {
+    demo_draw_solid(c, &d->sim, cellSize, cellOrigin, ui_color_purple);
+  }
   if (d->overlay & DemoOverlay_Velo) {
     demo_draw_velocity_edge(c, &d->sim, cellSize, cellOrigin, 0.05f);
   }
@@ -1105,7 +1111,7 @@ static void demo_draw(UiCanvasComp* c, DemoComp* d) {
 static const UiColor  g_demoMenuBg        = {0, 0, 0, 210};
 static const UiVector g_demoMenuSize      = {275, 40};
 static const UiVector g_demoMenuSpacing   = {10, 10};
-static const UiVector g_demoMenuInset     = {-30, -20};
+static const UiVector g_demoMenuInset     = {-30, -15};
 static const UiVector g_demoMenuValueSize = {0.6f, 1.0f};
 
 static void demo_menu_frame(UiCanvasComp* c) {
