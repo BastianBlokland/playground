@@ -1214,6 +1214,7 @@ ecs_system_define(DemoUpdateSys) {
       UiCanvasComp* uiCanvas = ecs_view_write_t(canvasItr, UiCanvasComp);
       ui_canvas_reset(uiCanvas);
       demo_draw(uiCanvas, demo);
+      ui_canvas_id_block_next(uiCanvas);
       if (!demo->hideMenu) {
         demo_menu(uiCanvas, demo);
       }
