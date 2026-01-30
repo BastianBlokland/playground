@@ -649,6 +649,19 @@ static const String g_demoLayerNames[] = {
 ASSERT(array_elems(g_demoLayerNames) == DemoLayer_Count, "Incorrect number of names");
 
 typedef enum {
+  DemoOverlay_Velo       = 1 << 0,
+  DemoOverlay_VeloCenter = 1 << 1,
+
+  DemoOverlay_Count = 2,
+} DemoOverlay;
+
+static const String g_demoOverlayNames[] = {
+    string_static("Velo"),
+    string_static("Velo Center"),
+};
+ASSERT(array_elems(g_demoOverlayNames) == DemoOverlay_Count, "Incorrect number of names");
+
+typedef enum {
   DemoLabel_None,
   DemoLabel_Smoke,
   DemoLabel_Pressure,
@@ -676,8 +689,9 @@ ecs_comp_define(DemoComp) {
 
   SimState sim;
 
-  DemoLayer layer;
-  DemoLabel label;
+  DemoLayer   layer;
+  DemoOverlay overlay;
+  DemoLabel   label;
 };
 
 static EcsEntityId demo_create_window(EcsWorld* world, const u16 width, const u16 height) {
@@ -1072,8 +1086,12 @@ static void demo_draw(UiCanvasComp* c, DemoComp* d) {
     UNREACHABLE
   }
   demo_draw_solid(c, &d->sim, cellSize, cellOrigin, ui_color_purple);
-  // demo_draw_velocity_edge(c, s, cellSize, cellOrigin, 0.05f);
-  // demo_draw_velocity_center(c, s, cellSize, cellOrigin, 0.05f);
+  if (d->overlay & DemoOverlay_Velo) {
+    demo_draw_velocity_edge(c, &d->sim, cellSize, cellOrigin, 0.05f);
+  }
+  if (d->overlay & DemoOverlay_VeloCenter) {
+    demo_draw_velocity_center(c, &d->sim, cellSize, cellOrigin, 0.05f);
+  }
   demo_draw_label(c, &d->sim, cellSize, cellOrigin, d->label);
 }
 
@@ -1097,14 +1115,33 @@ static void demo_menu_select(
   ui_layout_pop(c);
 }
 
+static void demo_menu_select_bits(
+    UiCanvasComp* c,
+    const String  label,
+    const BitSet  value,
+    const String* options,
+    const u32     optionCount) {
+  demo_menu_frame(c);
+  ui_layout_push(c);
+  static const UiVector g_frameInset = {-30, -20};
+  ui_layout_grow(c, UiAlign_MiddleCenter, g_frameInset, UiBase_Absolute, Ui_XY);
+  ui_label(c, label);
+  ui_layout_inner(c, UiBase_Current, UiAlign_MiddleRight, ui_vector(0.6f, 1), UiBase_Current);
+  ui_select_bits(c, value, options, optionCount);
+  ui_layout_pop(c);
+}
+
 static void demo_menu(UiCanvasComp* c, DemoComp* d) {
-  const UiVector size    = {250, 40};
+  const UiVector size    = {275, 40};
   const UiVector spacing = {10, 10};
 
   ui_layout_inner(c, UiBase_Canvas, UiAlign_BottomLeft, size, UiBase_Absolute);
   ui_layout_move(c, ui_vector(spacing.x, spacing.y), UiBase_Absolute, Ui_XY);
 
   demo_menu_select(c, string_lit("Label"), (i32*)&d->label, g_demoLabelNames, DemoLabel_Count);
+  ui_layout_next(c, Ui_Up, spacing.y);
+  demo_menu_select_bits(
+      c, string_lit("Overlay"), bitset_from_var(d->overlay), g_demoOverlayNames, DemoOverlay_Count);
   ui_layout_next(c, Ui_Up, spacing.y);
   demo_menu_select(c, string_lit("Layer"), (i32*)&d->layer, g_demoLayerNames, DemoLayer_Count);
 }
