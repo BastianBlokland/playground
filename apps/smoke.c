@@ -629,6 +629,12 @@ static bool sim_update(SimState* s, const f32 dt) {
   return true;
 }
 
+static void sim_clear(SimState* s) {
+  sim_smoke_clear(s);
+  sim_velocity_clear(s);
+  sim_pressure_clear(s);
+}
+
 typedef enum {
   DemoLayer_SmokeInterp,
   DemoLayer_Smoke,
@@ -1139,6 +1145,10 @@ static void demo_menu(UiCanvasComp* c, DemoComp* d) {
   ui_layout_inner(c, UiBase_Canvas, UiAlign_BottomLeft, g_demoMenuSize, UiBase_Absolute);
   ui_layout_move(c, g_demoMenuSpacing, UiBase_Absolute, Ui_XY);
 
+  if (ui_button(c, .label = string_lit("Reset"))) {
+    sim_clear(&d->sim);
+  }
+  ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
   demo_menu_select(c, string_lit("Label"), (i32*)&d->label, g_demoLabelNames, DemoLabel_Count);
   ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
   demo_menu_select_bits(
