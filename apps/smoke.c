@@ -1095,10 +1095,16 @@ static void demo_draw(UiCanvasComp* c, DemoComp* d) {
   demo_draw_label(c, &d->sim, cellSize, cellOrigin, d->label);
 }
 
+static const UiColor  g_demoMenuBg        = {0, 0, 0, 210};
+static const UiVector g_demoMenuSize      = {275, 40};
+static const UiVector g_demoMenuSpacing   = {10, 10};
+static const UiVector g_demoMenuInset     = {-30, -20};
+static const UiVector g_demoMenuValueSize = {0.6f, 1.0f};
+
 static void demo_menu_frame(UiCanvasComp* c) {
   ui_style_push(c);
   ui_style_outline(c, 5);
-  ui_style_color(c, ui_color(0, 0, 0, 200));
+  ui_style_color(c, g_demoMenuBg);
   ui_canvas_draw_glyph(c, UiShape_Circle, 10, UiFlags_None);
   ui_style_pop(c);
 }
@@ -1107,10 +1113,9 @@ static void demo_menu_select(
     UiCanvasComp* c, const String label, i32* value, const String* options, const u32 optionCount) {
   demo_menu_frame(c);
   ui_layout_push(c);
-  static const UiVector g_frameInset = {-30, -20};
-  ui_layout_grow(c, UiAlign_MiddleCenter, g_frameInset, UiBase_Absolute, Ui_XY);
+  ui_layout_grow(c, UiAlign_MiddleCenter, g_demoMenuInset, UiBase_Absolute, Ui_XY);
   ui_label(c, label);
-  ui_layout_inner(c, UiBase_Current, UiAlign_MiddleRight, ui_vector(0.6f, 1), UiBase_Current);
+  ui_layout_inner(c, UiBase_Current, UiAlign_MiddleRight, g_demoMenuValueSize, UiBase_Current);
   ui_select(c, value, options, optionCount);
   ui_layout_pop(c);
 }
@@ -1123,26 +1128,22 @@ static void demo_menu_select_bits(
     const u32     optionCount) {
   demo_menu_frame(c);
   ui_layout_push(c);
-  static const UiVector g_frameInset = {-30, -20};
-  ui_layout_grow(c, UiAlign_MiddleCenter, g_frameInset, UiBase_Absolute, Ui_XY);
+  ui_layout_grow(c, UiAlign_MiddleCenter, g_demoMenuInset, UiBase_Absolute, Ui_XY);
   ui_label(c, label);
-  ui_layout_inner(c, UiBase_Current, UiAlign_MiddleRight, ui_vector(0.6f, 1), UiBase_Current);
+  ui_layout_inner(c, UiBase_Current, UiAlign_MiddleRight, g_demoMenuValueSize, UiBase_Current);
   ui_select_bits(c, value, options, optionCount);
   ui_layout_pop(c);
 }
 
 static void demo_menu(UiCanvasComp* c, DemoComp* d) {
-  const UiVector size    = {275, 40};
-  const UiVector spacing = {10, 10};
-
-  ui_layout_inner(c, UiBase_Canvas, UiAlign_BottomLeft, size, UiBase_Absolute);
-  ui_layout_move(c, ui_vector(spacing.x, spacing.y), UiBase_Absolute, Ui_XY);
+  ui_layout_inner(c, UiBase_Canvas, UiAlign_BottomLeft, g_demoMenuSize, UiBase_Absolute);
+  ui_layout_move(c, g_demoMenuSpacing, UiBase_Absolute, Ui_XY);
 
   demo_menu_select(c, string_lit("Label"), (i32*)&d->label, g_demoLabelNames, DemoLabel_Count);
-  ui_layout_next(c, Ui_Up, spacing.y);
+  ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
   demo_menu_select_bits(
       c, string_lit("Overlay"), bitset_from_var(d->overlay), g_demoOverlayNames, DemoOverlay_Count);
-  ui_layout_next(c, Ui_Up, spacing.y);
+  ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
   demo_menu_select(c, string_lit("Layer"), (i32*)&d->layer, g_demoLayerNames, DemoLayer_Count);
 }
 
