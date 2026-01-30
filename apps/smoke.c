@@ -1225,6 +1225,16 @@ ecs_system_define(DemoUpdateSys) {
     if (gap_window_key_pressed(winComp, GapKey_R)) {
       sim_clear(&demo->sim);
     }
+    for (DemoLayer layer = 0; layer != DemoLayer_Count; ++layer) {
+      if (gap_window_key_pressed(winComp, GapKey_F1 + layer)) {
+        demo->layer = layer;
+      }
+    }
+    for (u32 overlayBit = 0; overlayBit != DemoOverlay_Count; ++overlayBit) {
+      if (gap_window_key_pressed(winComp, GapKey_F1 + DemoLayer_Count + overlayBit)) {
+        demo->overlay ^= 1 << overlayBit;
+      }
+    }
 
     if (ecs_view_maybe_jump(canvasItr, demo->uiCanvas)) {
       UiCanvasComp* uiCanvas = ecs_view_write_t(canvasItr, UiCanvasComp);
