@@ -1222,6 +1222,9 @@ ecs_system_define(DemoUpdateSys) {
     if (gap_window_key_pressed(winComp, GapKey_Tab)) {
       demo->hideMenu ^= 1;
     }
+    if (gap_window_key_pressed(winComp, GapKey_R)) {
+      sim_clear(&demo->sim);
+    }
 
     if (ecs_view_maybe_jump(canvasItr, demo->uiCanvas)) {
       UiCanvasComp* uiCanvas = ecs_view_write_t(canvasItr, UiCanvasComp);
