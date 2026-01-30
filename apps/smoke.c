@@ -695,6 +695,7 @@ ecs_comp_define(DemoComp) {
 
   SimState sim;
 
+  bool        hideMenu;
   DemoLayer   layer;
   DemoOverlay overlay;
   DemoLabel   label;
@@ -1199,12 +1200,17 @@ ecs_system_define(DemoUpdateSys) {
     if (gap_window_key_down(winComp, GapKey_Alt) && gap_window_key_pressed(winComp, GapKey_F4)) {
       gap_window_close(winComp);
     }
+    if (gap_window_key_pressed(winComp, GapKey_Tab)) {
+      demo->hideMenu ^= 1;
+    }
 
     if (ecs_view_maybe_jump(canvasItr, demo->uiCanvas)) {
       UiCanvasComp* uiCanvas = ecs_view_write_t(canvasItr, UiCanvasComp);
       ui_canvas_reset(uiCanvas);
       demo_draw(uiCanvas, demo);
-      demo_menu(uiCanvas, demo);
+      if (!demo->hideMenu) {
+        demo_menu(uiCanvas, demo);
+      }
     }
   }
 }
