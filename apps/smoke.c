@@ -99,13 +99,6 @@ static void sim_grid_clear(SimGrid* g) {
   mem_set(mem_create(g->values, sim_grid_count(g) * sizeof(f32)), 0);
 }
 
-static void sim_grid_fill(SimGrid* g, const f32 v) {
-  const u32 count = sim_grid_count(g);
-  for (u32 i = 0; i != count; ++i) {
-    g->values[i] = v;
-  }
-}
-
 static void sim_grid_rand(SimGrid* g, const f32 min, const f32 max) {
   const u32 count = sim_grid_count(g);
   for (u32 i = 0; i != count; ++i) {
