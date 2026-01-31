@@ -663,6 +663,7 @@ typedef enum {
   DemoInteract_Pull,
   DemoInteract_Push,
   DemoInteract_Guide,
+  DemoInteract_Solid,
 
   DemoInteract_Count,
 } DemoInteract;
@@ -672,6 +673,7 @@ static const String g_demoInteractNames[] = {
     string_static("Pull"),
     string_static("Push"),
     string_static("Guide"),
+    string_static("Solid"),
 };
 ASSERT(array_elems(g_demoInteractNames) == DemoInteract_Count, "Incorrect number of names");
 
@@ -824,7 +826,7 @@ static SimCoordFrac demo_input(UiCanvasComp* c, const f32 cellSize, const UiVect
   };
 }
 
-static void demo_interact(DemoComp* d, const SimCoordFrac inputPos) {
+static void demo_interact(DemoComp* d, const SimCoordFrac inputPos, const bool inputPressed) {
   switch (d->interact) {
   case DemoInteract_None:
     break;
@@ -840,6 +842,13 @@ static void demo_interact(DemoComp* d, const SimCoordFrac inputPos) {
     d->sim.guideCoord = sim_coord_round_down(inputPos);
     d->sim.guide      = sim_coord_valid(d->sim.guideCoord, d->sim.width, d->sim.height);
     break;
+  case DemoInteract_Solid: {
+    const SimCoord coord = sim_coord_round_down(inputPos);
+    if (sim_coord_valid(coord, d->sim.width, d->sim.height) && inputPressed) {
+      sim_solid_flip(&d->sim, coord);
+    }
+    break;
+  }
   case DemoInteract_Count:
     UNREACHABLE
   }
@@ -1423,7 +1432,8 @@ ecs_system_define(DemoUpdateSys) {
         const UiVector     cellOrigin = demo_cell_origin(uiCanvas, &demo->sim, cellSize);
         const SimCoordFrac inputPos   = demo_input(uiCanvas, cellSize, cellOrigin);
         if (ui_canvas_status(uiCanvas) == UiStatus_Idle) {
-          demo_interact(demo, inputPos);
+          const bool inputPressed = gap_window_key_pressed(winComp, GapKey_MouseLeft);
+          demo_interact(demo, inputPos, inputPressed);
         }
         demo_draw(uiCanvas, demo, cellSize, cellOrigin, inputPos);
       }
