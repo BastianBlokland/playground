@@ -784,6 +784,10 @@ static UiVector demo_cell_origin(UiCanvasComp* c, const SimState* s, const f32 c
   };
 }
 
+static UiVector demo_cell_pos(const f32 cellSize, const UiVector cellOrigin, const SimCoord c) {
+  return ui_vector(cellOrigin.x + c.x * cellSize, cellOrigin.y + c.y * cellSize);
+}
+
 static SimCoordFrac demo_input(UiCanvasComp* c, const f32 cellSize, const UiVector cellOrigin) {
   diag_assert(cellSize > f32_epsilon);
   const UiVector inputPos = ui_canvas_input_pos(c);
@@ -808,13 +812,13 @@ static void demo_draw_grid(
   ui_style_push(c);
   for (u32 y = 0; y != g->height; ++y) {
     for (u32 x = 0; x != g->width; ++x) {
-      const f32 v    = sim_grid_get(g, (SimCoord){x, y});
-      const f32 frac = math_clamp_f32(math_unlerp(minVal, maxVal, v), 0.0f, 1.0f);
+      const SimCoord coord = {x, y};
+      const f32      v     = sim_grid_get(g, coord);
+      const f32      frac  = math_clamp_f32(math_unlerp(minVal, maxVal, v), 0.0f, 1.0f);
 
       ui_style_color(c, ui_color_lerp(minColor, maxColor, frac));
-
-      const UiVector pos = {cellOrigin.x + x * cellSize, cellOrigin.y + y * cellSize};
-      ui_layout_set_pos(c, UiBase_Canvas, pos, UiBase_Absolute);
+      ui_layout_set_pos(
+          c, UiBase_Canvas, demo_cell_pos(cellSize, cellOrigin, coord), UiBase_Absolute);
 
       ui_canvas_draw_glyph(c, UiShape_Square, 5, UiFlags_None);
     }
@@ -855,10 +859,11 @@ static void demo_draw_grid_sampled(
       const f32 frac  = math_clamp_f32(math_unlerp(minVal, maxVal, v), 0.0f, 1.0f);
 
       ui_style_color(c, ui_color_lerp(minColor, maxColor, frac));
-
-      const UiVector pos =
-          ui_vector(cellOrigin.x + x * sampledCellSize, cellOrigin.y + y * sampledCellSize);
-      ui_layout_set_pos(c, UiBase_Canvas, pos, UiBase_Absolute);
+      ui_layout_set_pos(
+          c,
+          UiBase_Canvas,
+          demo_cell_pos(sampledCellSize, cellOrigin, (SimCoord){x, y}),
+          UiBase_Absolute);
 
       ui_canvas_draw_glyph(c, UiShape_Square, 5, UiFlags_None);
     }
@@ -971,9 +976,8 @@ static void demo_draw_velocity_divergence(
       const f32 frac = math_clamp_f32(math_abs(v) / scale, 0.0f, 1.0f);
 
       ui_style_color(c, ui_color_lerp(ui_color_green, ui_color_red, frac));
-
-      const UiVector pos = {cellOrigin.x + x * cellSize, cellOrigin.y + y * cellSize};
-      ui_layout_set_pos(c, UiBase_Canvas, pos, UiBase_Absolute);
+      ui_layout_set_pos(
+          c, UiBase_Canvas, demo_cell_pos(cellSize, cellOrigin, (SimCoord){x, y}), UiBase_Absolute);
 
       ui_canvas_draw_glyph(c, UiShape_Square, 5, UiFlags_None);
     }
@@ -1002,9 +1006,8 @@ static void demo_draw_velocity_color(
 
       const UiColor color = {.r = (u8)(vXNorm * 255.0f), .g = (u8)(vYNorm * 255.0f), 0, 255};
       ui_style_color(c, color);
-
-      const UiVector pos = {cellOrigin.x + x * cellSize, cellOrigin.y + y * cellSize};
-      ui_layout_set_pos(c, UiBase_Canvas, pos, UiBase_Absolute);
+      ui_layout_set_pos(
+          c, UiBase_Canvas, demo_cell_pos(cellSize, cellOrigin, (SimCoord){x, y}), UiBase_Absolute);
 
       ui_canvas_draw_glyph(c, UiShape_Square, 5, UiFlags_None);
     }
@@ -1016,10 +1019,9 @@ static void demo_draw_velocity_color(
 static void demo_draw_input(
     UiCanvasComp* c, const f32 cellSize, const UiVector cellOrigin, const SimCoord coord) {
 
-  const UiVector pos = {cellOrigin.x + coord.x * cellSize, cellOrigin.y + coord.y * cellSize};
   ui_layout_push(c);
   ui_layout_resize(c, UiAlign_BottomLeft, ui_vector(cellSize, cellSize), UiBase_Absolute, Ui_XY);
-  ui_layout_set_pos(c, UiBase_Canvas, pos, UiBase_Absolute);
+  ui_layout_set_pos(c, UiBase_Canvas, demo_cell_pos(cellSize, cellOrigin, coord), UiBase_Absolute);
 
   ui_style_push(c);
   ui_style_outline(c, 4);
@@ -1046,7 +1048,7 @@ static void demo_draw_solid(
   for (u32 y = 0; y != s->height; ++y) {
     for (u32 x = 0; x != s->width; ++x) {
       if (sim_solid(s, (SimCoord){x, y})) {
-        const UiVector pos = {cellOrigin.x + x * cellSize, cellOrigin.y + y * cellSize};
+        const UiVector pos = demo_cell_pos(cellSize, cellOrigin, (SimCoord){x, y});
         ui_layout_set_pos(c, UiBase_Canvas, pos, UiBase_Absolute);
         ui_canvas_draw_glyph(c, UiShape_Circle, 4, UiFlags_None);
       }
@@ -1103,8 +1105,8 @@ static void demo_draw_label(
   for (u32 y = 0; y != s->height; ++y) {
     for (u32 x = 0; x != s->width; ++x) {
       const SimCoord coord = {x, y};
-      const UiVector pos   = ui_vector(cellOrigin.x + x * cellSize, cellOrigin.y + y * cellSize);
-      ui_layout_set_pos(c, UiBase_Canvas, pos, UiBase_Absolute);
+      ui_layout_set_pos(
+          c, UiBase_Canvas, demo_cell_pos(cellSize, cellOrigin, coord), UiBase_Absolute);
 
       dynstring_clear(&textStr);
       switch (label) {
