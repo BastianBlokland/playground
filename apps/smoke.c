@@ -311,8 +311,8 @@ static void sim_velocity_clear(SimState* s) {
 }
 
 static void sim_velocity_randomize(SimState* s) {
-  sim_grid_rand(&s->velocitiesX, -1.0f, 1.0f);
-  sim_grid_rand(&s->velocitiesY, -1.0f, 1.0f);
+  sim_grid_rand(&s->velocitiesX, -25.0f, 25.0f);
+  sim_grid_rand(&s->velocitiesY, -25.0f, 25.0f);
 }
 
 static f32 sim_velocity_bottom(const SimState* s, const SimCoord c) {
@@ -1265,6 +1265,10 @@ static DemoMenuAction demo_menu(UiCanvasComp* c, DemoComp* d) {
   ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
   if (ui_button(c, .label = string_lit("Reset"))) {
     sim_clear(&d->sim);
+  }
+  ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
+  if (ui_button(c, .label = string_lit("Randomize Velocity"))) {
+    sim_velocity_randomize(&d->sim);
   }
   ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
   demo_menu_select(c, string_lit("Label"), (i32*)&d->label, g_demoLabelNames, DemoLabel_Count);
