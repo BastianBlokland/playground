@@ -349,6 +349,17 @@ static f32 sim_velocity_divergence(const SimState* s, const SimCoord c) {
   return (vRight - vLeft) + (vTop - vBottom);
 }
 
+static f32 sim_velocity_divergence_sum(const SimState* s) {
+  f32 result = 0;
+  for (u32 y = 0; y != s->height; ++y) {
+    for (u32 x = 0; x != s->width; ++x) {
+      const f32 diverence = sim_velocity_divergence(s, (SimCoord){x, y});
+      result += math_abs(diverence);
+    }
+  }
+  return result;
+}
+
 static f32 sim_speed(const SimState* s, const SimCoord c) {
   const f32 vX       = sim_velocity_x(s, c);
   const f32 vY       = sim_velocity_y(s, c);
@@ -1217,6 +1228,14 @@ static void demo_menu_frame(UiCanvasComp* c) {
   ui_style_pop(c);
 }
 
+static void demo_menu_label(UiCanvasComp* c, const String label) {
+  demo_menu_frame(c);
+  ui_layout_push(c);
+  ui_layout_grow(c, UiAlign_MiddleCenter, g_demoMenuInset, UiBase_Absolute, Ui_XY);
+  ui_label(c, label);
+  ui_layout_pop(c);
+}
+
 static void demo_menu_select(
     UiCanvasComp* c, const String label, i32* value, const String* options, const u32 optionCount) {
   demo_menu_frame(c);
@@ -1280,6 +1299,11 @@ static DemoMenuAction demo_menu(UiCanvasComp* c, DemoComp* d) {
   ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
   demo_menu_select(
       c, string_lit("Interact"), (i32*)&d->interact, g_demoInteractNames, DemoInteract_Count);
+  ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
+  demo_menu_label(
+      c, fmt_write_scratch("Divergence: {}", fmt_float(sim_velocity_divergence_sum(&d->sim))));
+  ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
+  demo_menu_label(c, fmt_write_scratch("Smoke: {}", fmt_float(sim_smoke_sum(&d->sim))));
 
   return action;
 }
