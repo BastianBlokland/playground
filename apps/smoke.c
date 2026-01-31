@@ -211,8 +211,8 @@ static SimState sim_state_create(const u32 width, const u32 height) {
       .velocityDiffusion = 0.5f,
       .smokeDiffusion    = 0.05f,
       .smokeDecay        = 0.01f,
-      .pushPressure      = 500.0f,
-      .pullForce         = 5.0f,
+      .pushPressure      = 100.0f,
+      .pullForce         = 100.0f,
 
       .velocitiesX = sim_grid_create(g_allocHeap, width + 1, height),
       .velocitiesY = sim_grid_create(g_allocHeap, width, height + 1),
@@ -638,6 +638,7 @@ static void sim_clear(SimState* s) {
 typedef enum {
   DemoInteract_None,
   DemoInteract_Pull,
+  DemoInteract_Push,
 
   DemoInteract_Count,
 } DemoInteract;
@@ -645,6 +646,7 @@ typedef enum {
 static const String g_demoInteractNames[] = {
     string_static("None"),
     string_static("Pull"),
+    string_static("Push"),
 };
 ASSERT(array_elems(g_demoInteractNames) == DemoInteract_Count, "Incorrect number of names");
 
@@ -797,12 +799,17 @@ static SimCoordFrac demo_input(UiCanvasComp* c, const f32 cellSize, const UiVect
   };
 }
 
-static void demo_interact(DemoComp* d, const SimCoordFrac inputPos, const f32 dt) {
+static void demo_interact(DemoComp* d, const SimCoordFrac inputPos) {
   switch (d->interact) {
   case DemoInteract_None:
     break;
   case DemoInteract_Pull:
-    sim_pull(&d->sim, inputPos, 100.0f * dt);
+    d->sim.pull      = true;
+    d->sim.pullCoord = inputPos;
+    break;
+  case DemoInteract_Push:
+    d->sim.push      = true;
+    d->sim.pushCoord = sim_coord_round_down(inputPos);
     break;
   case DemoInteract_Count:
     UNREACHABLE
@@ -1322,6 +1329,9 @@ ecs_system_define(DemoUpdateSys) {
   EcsIterator* canvasItr = ecs_view_itr(ecs_world_view_t(world, UiCanvasView));
   EcsIterator* winItr    = ecs_view_maybe_at(ecs_world_view_t(world, WindowView), demo->window);
 
+  demo->sim.push = false;
+  demo->sim.pull = false;
+
   if (winItr) {
     GapWindowComp* winComp = ecs_view_write_t(winItr, GapWindowComp);
 
@@ -1358,7 +1368,7 @@ ecs_system_define(DemoUpdateSys) {
         const UiVector     cellOrigin = demo_cell_origin(uiCanvas, &demo->sim, cellSize);
         const SimCoordFrac inputPos   = demo_input(uiCanvas, cellSize, cellOrigin);
         if (ui_canvas_status(uiCanvas) == UiStatus_Idle) {
-          demo_interact(demo, inputPos, demo_time_to_seconds(timeDelta));
+          demo_interact(demo, inputPos);
         }
         demo_draw(uiCanvas, demo, cellSize, cellOrigin, inputPos);
       }
