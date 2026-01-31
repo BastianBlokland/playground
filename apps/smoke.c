@@ -252,7 +252,36 @@ static bool sim_emitter_add(SimState* s, const SimEmitter e) {
   return true;
 }
 
-static void sim_emitter_clear(SimState* s) { s->emitterCount = 0; }
+static bool sim_emitter_add_default(SimState* s, const SimCoord c) {
+  return sim_emitter_add(
+      s,
+      (SimEmitter){
+          .angle       = math_pi_f32 * 0.25f,
+          .force       = 1000.0f,
+          .position    = c,
+          .smokeAmount = 5.0f,
+      });
+}
+
+static SimEmitter* sim_emitter_get(SimState* s, const SimCoord c) {
+  for (u32 i = 0; i != s->emitterCount; ++i) {
+    if (s->emitters[i].position.x == c.x && s->emitters[i].position.y == c.y) {
+      return &s->emitters[i];
+    }
+  }
+  return null;
+}
+
+static void sim_emitter_remove(SimState* s, const SimEmitter* e) {
+  const u32 index  = e - s->emitters;
+  const u32 toMove = (s->emitterCount - 1) - index;
+  if (toMove) {
+    const Mem dst = mem_create(&s->emitters[index], toMove * sizeof(SimEmitter));
+    const Mem src = mem_create(&s->emitters[index + 1], toMove * sizeof(SimEmitter));
+    mem_move(dst, src);
+  }
+  --s->emitterCount;
+}
 
 static bool sim_solid(const SimState* s, const SimCoord c) {
   if (!sim_coord_valid(c, s->width, s->height)) {
@@ -664,6 +693,7 @@ typedef enum {
   DemoInteract_Push,
   DemoInteract_Guide,
   DemoInteract_Solid,
+  DemoInteract_Emitter,
 
   DemoInteract_Count,
 } DemoInteract;
@@ -674,6 +704,7 @@ static const String g_demoInteractNames[] = {
     string_static("Push"),
     string_static("Guide"),
     string_static("Solid"),
+    string_static("Emitter"),
 };
 ASSERT(array_elems(g_demoInteractNames) == DemoInteract_Count, "Incorrect number of names");
 
@@ -774,14 +805,7 @@ static DemoComp* demo_create(EcsWorld* world, const u16 winWidth, const u16 winH
   const u32 simHeight = 30;
   demo->sim           = sim_state_create(simWidth, simHeight);
 
-  sim_emitter_add(
-      &demo->sim,
-      (SimEmitter){
-          .angle       = math_pi_f32 * 0.25f,
-          .force       = 1000.0f,
-          .position    = {2, 2},
-          .smokeAmount = 5.0f,
-      });
+  sim_emitter_add_default(&demo->sim, (SimCoord){2, 2});
 
   sim_solid_set(&demo->sim, (SimCoord){6, 6});
   sim_solid_set(&demo->sim, (SimCoord){7, 5});
@@ -846,6 +870,18 @@ static void demo_interact(DemoComp* d, const SimCoordFrac inputPos, const bool i
     const SimCoord coord = sim_coord_round_down(inputPos);
     if (sim_coord_valid(coord, d->sim.width, d->sim.height) && inputPressed) {
       sim_solid_flip(&d->sim, coord);
+    }
+    break;
+  }
+  case DemoInteract_Emitter: {
+    const SimCoord coord = sim_coord_round_down(inputPos);
+    if (sim_coord_valid(coord, d->sim.width, d->sim.height) && inputPressed) {
+      SimEmitter* emitter = sim_emitter_get(&d->sim, coord);
+      if (emitter) {
+        sim_emitter_remove(&d->sim, emitter);
+      } else {
+        sim_emitter_add_default(&d->sim, coord);
+      }
     }
     break;
   }
