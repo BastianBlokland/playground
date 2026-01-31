@@ -188,6 +188,11 @@ typedef struct {
   SimCoordFrac pullCoord;
   f32          pullForce;
 
+  bool     guide;
+  SimCoord guideCoord;
+  f32      guideForce;
+  f32      guideAngle;
+
   SimEmitter emitters[4];
   u32        emitterCount;
 
@@ -213,6 +218,7 @@ static SimState sim_state_create(const u32 width, const u32 height) {
       .smokeDecay        = 0.01f,
       .pushPressure      = 100.0f,
       .pullForce         = 100.0f,
+      .guideForce        = 500.0f,
 
       .velocitiesX = sim_grid_create(g_allocHeap, width + 1, height),
       .velocitiesY = sim_grid_create(g_allocHeap, width, height + 1),
@@ -629,6 +635,12 @@ static bool sim_update(SimState* s, const f32 dt) {
   if (s->pull) {
     sim_pull(s, s->pullCoord, s->pullForce * dt);
   }
+  if (s->guide) {
+    const f32 veloX = math_cos_f32(s->guideAngle) * s->guideForce * dt;
+    const f32 veloY = math_sin_f32(s->guideAngle) * s->guideForce * dt;
+    sim_velocity_add(s, s->guideCoord, veloX, veloY);
+  }
+
   sim_diffuse_velocity(s, dt);
   sim_diffuse_smoke(s, dt);
   sim_advect_velocity(s, dt);
@@ -650,6 +662,7 @@ typedef enum {
   DemoInteract_None,
   DemoInteract_Pull,
   DemoInteract_Push,
+  DemoInteract_Guide,
 
   DemoInteract_Count,
 } DemoInteract;
@@ -658,6 +671,7 @@ static const String g_demoInteractNames[] = {
     string_static("None"),
     string_static("Pull"),
     string_static("Push"),
+    string_static("Guide"),
 };
 ASSERT(array_elems(g_demoInteractNames) == DemoInteract_Count, "Incorrect number of names");
 
@@ -819,8 +833,12 @@ static void demo_interact(DemoComp* d, const SimCoordFrac inputPos) {
     d->sim.pullCoord = inputPos;
     break;
   case DemoInteract_Push:
-    d->sim.push      = true;
     d->sim.pushCoord = sim_coord_round_down(inputPos);
+    d->sim.push      = sim_coord_valid(d->sim.pushCoord, d->sim.width, d->sim.height);
+    break;
+  case DemoInteract_Guide:
+    d->sim.guideCoord = sim_coord_round_down(inputPos);
+    d->sim.guide      = sim_coord_valid(d->sim.guideCoord, d->sim.width, d->sim.height);
     break;
   case DemoInteract_Count:
     UNREACHABLE
@@ -1357,8 +1375,9 @@ ecs_system_define(DemoUpdateSys) {
   EcsIterator* canvasItr = ecs_view_itr(ecs_world_view_t(world, UiCanvasView));
   EcsIterator* winItr    = ecs_view_maybe_at(ecs_world_view_t(world, WindowView), demo->window);
 
-  demo->sim.push = false;
-  demo->sim.pull = false;
+  demo->sim.push  = false;
+  demo->sim.pull  = false;
+  demo->sim.guide = false;
 
   if (winItr) {
     GapWindowComp* winComp = ecs_view_write_t(winItr, GapWindowComp);
