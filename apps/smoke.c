@@ -636,6 +636,19 @@ static void sim_clear(SimState* s) {
 }
 
 typedef enum {
+  DemoInteract_None,
+  DemoInteract_Pull,
+
+  DemoInteract_Count,
+} DemoInteract;
+
+static const String g_demoInteractNames[] = {
+    string_static("None"),
+    string_static("Pull"),
+};
+ASSERT(array_elems(g_demoInteractNames) == DemoInteract_Count, "Incorrect number of names");
+
+typedef enum {
   DemoLayer_SmokeInterp,
   DemoLayer_Smoke,
   DemoLayer_Pressure,
@@ -700,10 +713,11 @@ ecs_comp_define(DemoComp) {
 
   SimState sim;
 
-  bool        hideMenu;
-  DemoLayer   layer;
-  DemoOverlay overlay;
-  DemoLabel   label;
+  bool         hideMenu;
+  DemoInteract interact;
+  DemoLayer    layer;
+  DemoOverlay  overlay;
+  DemoLabel    label;
 };
 
 static EcsEntityId demo_create_window(EcsWorld* world, const u16 width, const u16 height) {
@@ -770,6 +784,15 @@ static UiVector demo_cell_origin(UiCanvasComp* c, const SimState* s, const f32 c
   };
 }
 
+static SimCoordFrac demo_input(UiCanvasComp* c, const f32 cellSize, const UiVector cellOrigin) {
+  diag_assert(cellSize > f32_epsilon);
+  const UiVector inputPos = ui_canvas_input_pos(c);
+  return (SimCoordFrac){
+      (inputPos.x - cellOrigin.x) / cellSize,
+      (inputPos.y - cellOrigin.y) / cellSize,
+  };
+}
+
 static void demo_draw_grid(
     UiCanvasComp*  c,
     const SimGrid* g,
@@ -790,7 +813,7 @@ static void demo_draw_grid(
 
       ui_style_color(c, ui_color_lerp(minColor, maxColor, frac));
 
-      const UiVector pos = ui_vector(cellOrigin.x + x * cellSize, cellOrigin.y + y * cellSize);
+      const UiVector pos = {cellOrigin.x + x * cellSize, cellOrigin.y + y * cellSize};
       ui_layout_set_pos(c, UiBase_Canvas, pos, UiBase_Absolute);
 
       ui_canvas_draw_glyph(c, UiShape_Square, 5, UiFlags_None);
@@ -949,7 +972,7 @@ static void demo_draw_velocity_divergence(
 
       ui_style_color(c, ui_color_lerp(ui_color_green, ui_color_red, frac));
 
-      const UiVector pos = ui_vector(cellOrigin.x + x * cellSize, cellOrigin.y + y * cellSize);
+      const UiVector pos = {cellOrigin.x + x * cellSize, cellOrigin.y + y * cellSize};
       ui_layout_set_pos(c, UiBase_Canvas, pos, UiBase_Absolute);
 
       ui_canvas_draw_glyph(c, UiShape_Square, 5, UiFlags_None);
@@ -980,12 +1003,30 @@ static void demo_draw_velocity_color(
       const UiColor color = {.r = (u8)(vXNorm * 255.0f), .g = (u8)(vYNorm * 255.0f), 0, 255};
       ui_style_color(c, color);
 
-      const UiVector pos = ui_vector(cellOrigin.x + x * cellSize, cellOrigin.y + y * cellSize);
+      const UiVector pos = {cellOrigin.x + x * cellSize, cellOrigin.y + y * cellSize};
       ui_layout_set_pos(c, UiBase_Canvas, pos, UiBase_Absolute);
 
       ui_canvas_draw_glyph(c, UiShape_Square, 5, UiFlags_None);
     }
   }
+  ui_style_pop(c);
+  ui_layout_pop(c);
+}
+
+static void demo_draw_input(
+    UiCanvasComp* c, const f32 cellSize, const UiVector cellOrigin, const SimCoord coord) {
+
+  const UiVector pos = {cellOrigin.x + coord.x * cellSize, cellOrigin.y + coord.y * cellSize};
+  ui_layout_push(c);
+  ui_layout_resize(c, UiAlign_BottomLeft, ui_vector(cellSize, cellSize), UiBase_Absolute, Ui_XY);
+  ui_layout_set_pos(c, UiBase_Canvas, pos, UiBase_Absolute);
+
+  ui_style_push(c);
+  ui_style_outline(c, 4);
+  ui_style_color(c, ui_color_clear);
+
+  ui_canvas_draw_glyph(c, UiShape_Square, 10, UiFlags_None);
+
   ui_style_pop(c);
   ui_layout_pop(c);
 }
@@ -1005,7 +1046,7 @@ static void demo_draw_solid(
   for (u32 y = 0; y != s->height; ++y) {
     for (u32 x = 0; x != s->width; ++x) {
       if (sim_solid(s, (SimCoord){x, y})) {
-        const UiVector pos = ui_vector(cellOrigin.x + x * cellSize, cellOrigin.y + y * cellSize);
+        const UiVector pos = {cellOrigin.x + x * cellSize, cellOrigin.y + y * cellSize};
         ui_layout_set_pos(c, UiBase_Canvas, pos, UiBase_Absolute);
         ui_canvas_draw_glyph(c, UiShape_Circle, 4, UiFlags_None);
       }
@@ -1093,12 +1134,12 @@ static void demo_draw_label(
   ui_layout_pop(c);
 }
 
-static void demo_draw(UiCanvasComp* c, DemoComp* d) {
-  const f32      cellSize   = demo_cell_size(c, &d->sim);
-  const UiVector cellOrigin = demo_cell_origin(c, &d->sim, cellSize);
-  if (cellSize < f32_epsilon) {
-    return;
-  }
+static void demo_draw(
+    UiCanvasComp*      c,
+    DemoComp*          d,
+    const f32          cellSize,
+    const UiVector     cellOrigin,
+    const SimCoordFrac inputPos) {
   switch (d->layer) {
   case DemoLayer_SmokeInterp:
     demo_draw_grid_sampled(
@@ -1120,6 +1161,11 @@ static void demo_draw(UiCanvasComp* c, DemoComp* d) {
     break;
   case DemoLayer_Count:
     UNREACHABLE
+  }
+  const SimCoord inputPosWhole = sim_coord_round_down(inputPos);
+  if (d->interact && ui_canvas_status(c) == UiStatus_Idle &&
+      sim_coord_valid(inputPosWhole, d->sim.width, d->sim.height)) {
+    demo_draw_input(c, cellSize, cellOrigin, inputPosWhole);
   }
   if (d->overlay & DemoOverlay_Solid) {
     demo_draw_solid(c, &d->sim, cellSize, cellOrigin, ui_color_purple);
@@ -1206,6 +1252,9 @@ static DemoMenuAction demo_menu(UiCanvasComp* c, DemoComp* d) {
       c, string_lit("Overlay"), bitset_from_var(d->overlay), g_demoOverlayNames, DemoOverlay_Count);
   ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
   demo_menu_select(c, string_lit("Layer"), (i32*)&d->layer, g_demoLayerNames, DemoLayer_Count);
+  ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
+  demo_menu_select(
+      c, string_lit("Interact"), (i32*)&d->interact, g_demoInteractNames, DemoInteract_Count);
 
   return action;
 }
@@ -1271,6 +1320,11 @@ ecs_system_define(DemoUpdateSys) {
     if (gap_window_key_pressed(winComp, GapKey_R)) {
       sim_clear(&demo->sim);
     }
+    for (DemoInteract interact = 0; interact != DemoInteract_Count; ++interact) {
+      if (gap_window_key_pressed(winComp, GapKey_Alpha1 + interact)) {
+        demo->interact = interact;
+      }
+    }
     for (DemoLayer layer = 0; layer != DemoLayer_Count; ++layer) {
       if (gap_window_key_pressed(winComp, GapKey_F1 + layer)) {
         demo->layer = layer;
@@ -1285,7 +1339,12 @@ ecs_system_define(DemoUpdateSys) {
     if (ecs_view_maybe_jump(canvasItr, demo->uiCanvas)) {
       UiCanvasComp* uiCanvas = ecs_view_write_t(canvasItr, UiCanvasComp);
       ui_canvas_reset(uiCanvas);
-      demo_draw(uiCanvas, demo);
+      const f32 cellSize = demo_cell_size(uiCanvas, &demo->sim);
+      if (cellSize > f32_epsilon) {
+        const UiVector     cellOrigin = demo_cell_origin(uiCanvas, &demo->sim, cellSize);
+        const SimCoordFrac inputPos   = demo_input(uiCanvas, cellSize, cellOrigin);
+        demo_draw(uiCanvas, demo, cellSize, cellOrigin, inputPos);
+      }
       ui_canvas_id_block_next(uiCanvas);
       if (!demo->hideMenu) {
         switch (demo_menu(uiCanvas, demo)) {
