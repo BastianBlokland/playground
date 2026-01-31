@@ -1308,6 +1308,14 @@ static DemoMenuAction demo_menu(UiCanvasComp* c, DemoComp* d) {
     sim_velocity_randomize(&d->sim);
   }
   ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
+  if (ui_button(c, .label = string_lit("Solid Clear"))) {
+    sim_solid_clear(&d->sim);
+  }
+  ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
+  if (ui_button(c, .label = string_lit("Solid Border"))) {
+    sim_solid_set_border(&d->sim);
+  }
+  ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
   demo_menu_select(c, string_lit("Label"), (i32*)&d->label, g_demoLabelNames, DemoLabel_Count);
   ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
   demo_menu_select_bits(
