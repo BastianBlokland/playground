@@ -843,7 +843,8 @@ static SimCoordFrac demo_input(UiCanvasComp* c, const f32 cellSize, const UiVect
   };
 }
 
-static void demo_interact(DemoComp* d, const SimCoordFrac inputPos, const bool inputPressed) {
+static void demo_interact(
+    DemoComp* d, const SimCoordFrac inputPos, const bool inputPressed, const f32 inputScroll) {
   switch (d->interact) {
   case DemoInteract_None:
     break;
@@ -867,14 +868,16 @@ static void demo_interact(DemoComp* d, const SimCoordFrac inputPos, const bool i
     break;
   }
   case DemoInteract_Emitter: {
-    const SimCoord coord = sim_coord_round_down(inputPos);
-    if (sim_coord_valid(coord, d->sim.width, d->sim.height) && inputPressed) {
-      SimEmitter* emitter = sim_emitter_get(&d->sim, coord);
-      if (emitter) {
+    const SimCoord coord   = sim_coord_round_down(inputPos);
+    SimEmitter*    emitter = sim_emitter_get(&d->sim, coord);
+    if (emitter) {
+      if (inputPressed) {
         sim_emitter_remove(&d->sim, emitter);
       } else {
-        sim_emitter_add_default(&d->sim, coord);
+        emitter->angle = math_mod_f32(emitter->angle + inputScroll * 0.1f, math_pi_f32 * 2.0f);
       }
+    } else if (sim_coord_valid(coord, d->sim.width, d->sim.height) && inputPressed) {
+      sim_emitter_add_default(&d->sim, coord);
     }
     break;
   }
@@ -1160,7 +1163,8 @@ static void demo_draw_emitters(
         cellOrigin.y + emitter->position.y * cellSize,
     };
     ui_layout_set_pos(c, UiBase_Canvas, pos, UiBase_Absolute);
-    ui_canvas_draw_glyph_rotated(c, UiShape_ExpandLess, 0, emitter->angle, UiFlags_None);
+    ui_canvas_draw_glyph_rotated(
+        c, UiShape_ExpandLess, 0, -emitter->angle + math_pi_f32 * 0.5f, UiFlags_None);
   }
 
   ui_style_pop(c);
@@ -1458,11 +1462,12 @@ ecs_system_define(DemoUpdateSys) {
       ui_canvas_reset(uiCanvas);
       const f32 cellSize = demo_cell_size(uiCanvas, &demo->sim);
       if (cellSize > f32_epsilon) {
-        const UiVector     cellOrigin = demo_cell_origin(uiCanvas, &demo->sim, cellSize);
-        const SimCoordFrac inputPos   = demo_input(uiCanvas, cellSize, cellOrigin);
+        const UiVector     cellOrigin   = demo_cell_origin(uiCanvas, &demo->sim, cellSize);
+        const SimCoordFrac inputPos     = demo_input(uiCanvas, cellSize, cellOrigin);
+        const bool         inputPressed = gap_window_key_pressed(winComp, GapKey_MouseLeft);
+        const f32          inputScroll  = gap_window_param(winComp, GapParam_ScrollDelta).y;
         if (ui_canvas_status(uiCanvas) == UiStatus_Idle) {
-          const bool inputPressed = gap_window_key_pressed(winComp, GapKey_MouseLeft);
-          demo_interact(demo, inputPos, inputPressed);
+          demo_interact(demo, inputPos, inputPressed, inputScroll);
         }
         demo_draw(uiCanvas, demo, cellSize, cellOrigin, inputPos);
       }
