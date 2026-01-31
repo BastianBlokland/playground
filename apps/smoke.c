@@ -843,8 +843,9 @@ static SimCoordFrac demo_input(UiCanvasComp* c, const f32 cellSize, const UiVect
   };
 }
 
-static void demo_interact(
-    DemoComp* d, const SimCoordFrac inputPos, const bool inputPressed, const f32 inputScroll) {
+static void demo_interact(DemoComp* d, const GapWindowComp* w, const SimCoordFrac inputPos) {
+  const bool click  = gap_window_key_pressed(w, GapKey_MouseLeft);
+  const f32  scroll = gap_window_param(w, GapParam_ScrollDelta).y;
   switch (d->interact) {
   case DemoInteract_None:
     break;
@@ -859,10 +860,11 @@ static void demo_interact(
   case DemoInteract_Guide:
     d->sim.guideCoord = sim_coord_round_down(inputPos);
     d->sim.guide      = sim_coord_valid(d->sim.guideCoord, d->sim.width, d->sim.height);
+    d->sim.guideAngle = math_mod_f32(d->sim.guideAngle + scroll * 0.1f, math_pi_f32 * 2.0f);
     break;
   case DemoInteract_Solid: {
     const SimCoord coord = sim_coord_round_down(inputPos);
-    if (sim_coord_valid(coord, d->sim.width, d->sim.height) && inputPressed) {
+    if (sim_coord_valid(coord, d->sim.width, d->sim.height) && click) {
       sim_solid_flip(&d->sim, coord);
     }
     break;
@@ -871,12 +873,12 @@ static void demo_interact(
     const SimCoord coord   = sim_coord_round_down(inputPos);
     SimEmitter*    emitter = sim_emitter_get(&d->sim, coord);
     if (emitter) {
-      if (inputPressed) {
+      if (click) {
         sim_emitter_remove(&d->sim, emitter);
       } else {
-        emitter->angle = math_mod_f32(emitter->angle + inputScroll * 0.1f, math_pi_f32 * 2.0f);
+        emitter->angle = math_mod_f32(emitter->angle + scroll * 0.1f, math_pi_f32 * 2.0f);
       }
-    } else if (sim_coord_valid(coord, d->sim.width, d->sim.height) && inputPressed) {
+    } else if (sim_coord_valid(coord, d->sim.width, d->sim.height) && click) {
       sim_emitter_add_default(&d->sim, coord);
     }
     break;
@@ -1462,12 +1464,10 @@ ecs_system_define(DemoUpdateSys) {
       ui_canvas_reset(uiCanvas);
       const f32 cellSize = demo_cell_size(uiCanvas, &demo->sim);
       if (cellSize > f32_epsilon) {
-        const UiVector     cellOrigin   = demo_cell_origin(uiCanvas, &demo->sim, cellSize);
-        const SimCoordFrac inputPos     = demo_input(uiCanvas, cellSize, cellOrigin);
-        const bool         inputPressed = gap_window_key_pressed(winComp, GapKey_MouseLeft);
-        const f32          inputScroll  = gap_window_param(winComp, GapParam_ScrollDelta).y;
+        const UiVector     cellOrigin = demo_cell_origin(uiCanvas, &demo->sim, cellSize);
+        const SimCoordFrac inputPos   = demo_input(uiCanvas, cellSize, cellOrigin);
         if (ui_canvas_status(uiCanvas) == UiStatus_Idle) {
-          demo_interact(demo, inputPos, inputPressed, inputScroll);
+          demo_interact(demo, winComp, inputPos);
         }
         demo_draw(uiCanvas, demo, cellSize, cellOrigin, inputPos);
       }
