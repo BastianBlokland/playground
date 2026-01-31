@@ -797,6 +797,18 @@ static SimCoordFrac demo_input(UiCanvasComp* c, const f32 cellSize, const UiVect
   };
 }
 
+static void demo_interact(DemoComp* d, const SimCoordFrac inputPos, const f32 dt) {
+  switch (d->interact) {
+  case DemoInteract_None:
+    break;
+  case DemoInteract_Pull:
+    sim_pull(&d->sim, inputPos, 100.0f * dt);
+    break;
+  case DemoInteract_Count:
+    UNREACHABLE
+  }
+}
+
 static void demo_draw_grid(
     UiCanvasComp*  c,
     const SimGrid* g,
@@ -1345,6 +1357,9 @@ ecs_system_define(DemoUpdateSys) {
       if (cellSize > f32_epsilon) {
         const UiVector     cellOrigin = demo_cell_origin(uiCanvas, &demo->sim, cellSize);
         const SimCoordFrac inputPos   = demo_input(uiCanvas, cellSize, cellOrigin);
+        if (ui_canvas_status(uiCanvas) == UiStatus_Idle) {
+          demo_interact(demo, inputPos, demo_time_to_seconds(timeDelta));
+        }
         demo_draw(uiCanvas, demo, cellSize, cellOrigin, inputPos);
       }
       ui_canvas_id_block_next(uiCanvas);
