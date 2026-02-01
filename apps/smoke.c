@@ -1299,8 +1299,8 @@ static void demo_draw(
 }
 
 static const UiColor  g_demoMenuBg        = {0, 0, 0, 210};
-static const UiVector g_demoMenuSize      = {280, 40};
-static const UiVector g_demoMenuSpacing   = {10, 10};
+static const UiVector g_demoMenuSize      = {280, 35};
+static const UiVector g_demoMenuSpacing   = {8, 8};
 static const UiVector g_demoMenuInset     = {-30, -15};
 static const UiVector g_demoMenuValueSize = {0.55f, 1.0f};
 
