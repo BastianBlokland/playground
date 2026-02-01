@@ -22,6 +22,7 @@
 #include "gap/register.h"
 #include "gap/window.h"
 #include "log/logger.h"
+#include "rend/camera.h"
 #include "rend/error.h"
 #include "rend/register.h"
 #include "rend/settings.h"
@@ -889,7 +890,18 @@ static DemoComp* demo_create(EcsWorld* world, const u16 winWidth, const u16 winH
   demo->window   = demo_create_window(world, winWidth, winHeight);
   demo->uiCanvas = ui_canvas_create(world, demo->window, UiCanvasCreateFlags_ToBack);
 
-  rend_settings_window_init(world, demo->window)->flags |= RendFlags_2D;
+  ecs_world_add_t(
+      world,
+      demo->window,
+      RendCameraComp,
+      .position  = {.y = 10},
+      .rotation  = geo_quat_ident,
+      .persFov   = 50 * math_deg_to_rad,
+      .persNear  = 0.75f,
+      .orthoSize = 5);
+
+  RendSettingsComp* set = rend_settings_window_init(world, demo->window);
+  set->skyMode          = RendSkyMode_Gradient;
 
   const u32 simWidth  = 25;
   const u32 simHeight = 5;
