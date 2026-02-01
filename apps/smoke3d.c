@@ -8,7 +8,6 @@
 #include "core/alloc.h"
 #include "core/bits.h"
 #include "core/diag.h"
-#include "core/dynstring.h"
 #include "core/file.h"
 #include "core/float.h"
 #include "core/format.h"
