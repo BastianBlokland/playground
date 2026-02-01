@@ -120,11 +120,12 @@ add_custom_target(test DEPENDS
 
 set(CMAKE_INSTALL_PREFIX "${CMAKE_SOURCE_DIR}") # Install to project directory itself.
 
-install(TARGETS smoke DESTINATION bin)
+install(TARGETS smoke smoke3d DESTINATION bin)
 
 if(${VOLO_PLATFORM} STREQUAL "win32" AND NOT ${VOLO_COMPILER} STREQUAL "gcc")
   install(FILES
     $<TARGET_PDB_FILE:smoke>
+    $<TARGET_PDB_FILE:smoke3d>
     DESTINATION bin)
 endif()
 
@@ -134,6 +135,9 @@ endif()
 
 add_custom_target(run.smoke
   COMMAND smoke "--assets" "${CMAKE_SOURCE_DIR}/assets"  VERBATIM USES_TERMINAL)
+
+add_custom_target(run.smoke3d
+  COMMAND smoke3d "--assets" "${CMAKE_SOURCE_DIR}/assets"  VERBATIM USES_TERMINAL)
 
 add_custom_target(run.pack
   COMMAND pack

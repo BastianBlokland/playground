@@ -8,13 +8,14 @@
 #include "core/alloc.h"
 #include "core/bits.h"
 #include "core/diag.h"
+#include "core/dynstring.h"
 #include "core/file.h"
 #include "core/float.h"
+#include "core/format.h"
 #include "core/intrinsic.h"
 #include "core/math.h"
 #include "core/rng.h"
 #include "core/version.h"
-#include "ecs/entity.h"
 #include "ecs/utils.h"
 #include "ecs/view.h"
 #include "gap/error.h"
@@ -34,56 +35,68 @@
 #include "ui/widget.h"
 
 /**
- * Semi-Lagrangian fluid simulation.
+ * 3D Eulerian fluid simulation with Semi-Lagrangian advection.
  * Reference: https://www.cs.ubc.ca/~rbridson/fluidsimulation/fluids_notes.pdf
  * Reference: https://www.youtube.com/watch?v=Q78wvrQ9xsU
  */
 
 typedef struct {
-  i32 x, y, z;
+  i32 x, y;
 } SimCoord;
 
 typedef struct {
-  f32 x, y, z;
+  f32 x, y;
 } SimCoordFrac;
 
 static SimCoord sim_coord_round_down(const SimCoordFrac c) {
   return (SimCoord){
       .x = (i32)math_round_down_f32(c.x),
       .y = (i32)math_round_down_f32(c.y),
-      .z = (i32)math_round_down_f32(c.z),
   };
+}
+
+static bool sim_coord_valid(const SimCoord c, const u32 width, const u32 height) {
+  if (c.x < 0 || c.x >= (i32)width) {
+    return false;
+  }
+  if (c.y < 0 || c.y >= (i32)height) {
+    return false;
+  }
+  return true;
+}
+
+static u32 sim_coord_dist_manhattan(const SimCoord a, const SimCoord b) {
+  return (u32)(math_abs(a.x - b.x) + math_abs(a.y - b.y));
 }
 
 typedef struct {
-  u32  width, height, depth;
+  u32  width, height;
   f32* values;
 } SimGrid;
 
-static SimGrid sim_grid_create(const u32 width, const u32 height, const u32 depth) {
+static SimGrid sim_grid_create(Allocator* a, const u32 width, const u32 height) {
   return (SimGrid){
       .width  = width,
       .height = height,
-      .depth  = depth,
-      .values = alloc_array_t(g_allocHeap, f32, width * height * depth),
+      .values = alloc_array_t(a, f32, height * width),
   };
 }
 
-static void sim_grid_destroy(SimGrid* g) {
-  alloc_free_array_t(g_allocHeap, g->values, g->width * g->height * g->depth);
+static void sim_grid_destroy(Allocator* a, SimGrid* g) {
+  alloc_free_array_t(a, g->values, g->height * g->width);
 }
 
-static u32 sim_grid_count(const SimGrid* g) { return g->depth * g->height * g->width; }
+static u32 sim_grid_count(const SimGrid* g) { return g->height * g->width; }
+
+static void sim_grid_copy(const SimGrid* dst, const SimGrid* src) {
+  const u32 count = sim_grid_count(src);
+  diag_assert(sim_grid_count(dst) == count);
+  const usize size = sizeof(f32) * count;
+  mem_cpy(mem_create(dst->values, size), mem_create(src->values, size));
+}
 
 static void sim_grid_clear(SimGrid* g) {
   mem_set(mem_create(g->values, sim_grid_count(g) * sizeof(f32)), 0);
-}
-
-static void sim_grid_fill(SimGrid* g, const f32 v) {
-  const u32 count = sim_grid_count(g);
-  for (u32 i = 0; i != count; ++i) {
-    g->values[i] = v;
-  }
 }
 
 static void sim_grid_rand(SimGrid* g, const f32 min, const f32 max) {
@@ -102,22 +115,17 @@ static f32 sim_grid_sum(const SimGrid* g) {
   return result;
 }
 
-static bool sim_grid_valid(const SimGrid* g, const SimCoord c) {
-  if (c.x < 0 || c.x > (i32)g->width) {
-    return false;
-  }
-  if (c.y < 0 || c.y > (i32)g->height) {
-    return false;
-  }
-  if (c.z < 0 || c.z > (i32)g->depth) {
-    return false;
-  }
-  return true;
+static u32 sim_grid_index(const SimGrid* g, const SimCoord c) {
+  diag_assert(sim_coord_valid(c, g->width, g->height));
+  return c.y * g->width + c.x;
 }
 
-static u32 sim_grid_index(const SimGrid* g, const SimCoord c) {
-  diag_assert(sim_grid_valid(g, c));
-  return c.z * g->height * g->width + c.y * g->width + c.x;
+static void sim_grid_set(SimGrid* g, const SimCoord c, const f32 v) {
+  g->values[sim_grid_index(g, c)] = v;
+}
+
+static void sim_grid_add(SimGrid* g, const SimCoord c, const f32 v) {
+  g->values[sim_grid_index(g, c)] += v;
 }
 
 static f32 sim_grid_get(const SimGrid* g, const SimCoord c) {
@@ -125,920 +133,1322 @@ static f32 sim_grid_get(const SimGrid* g, const SimCoord c) {
 }
 
 static f32 sim_grid_get_bounded(const SimGrid* g, const SimCoord c, const f32 fallback) {
-  return sim_grid_valid(g, c) ? g->values[sim_grid_index(g, c)] : fallback;
+  return sim_coord_valid(c, g->width, g->height) ? sim_grid_get(g, c) : fallback;
 }
 
 static f32 sim_grid_sample(const SimGrid* g, const SimCoordFrac c, const f32 fallback) {
   const SimCoord cI = sim_coord_round_down(c);
 
-  const SimCoord c000 = {cI.x, cI.y, cI.z};
-  const SimCoord c100 = {cI.x + 1, cI.y, cI.z};
-  const SimCoord c010 = {cI.x, cI.y + 1, cI.z};
-  const SimCoord c110 = {cI.x + 1, cI.y + 1, cI.z};
-  const SimCoord c001 = {cI.x, cI.y, cI.z + 1};
-  const SimCoord c101 = {cI.x + 1, cI.y, cI.z + 1};
-  const SimCoord c011 = {cI.x, cI.y + 1, cI.z + 1};
-  const SimCoord c111 = {cI.x + 1, cI.y + 1, cI.z + 1};
+  const SimCoord c00 = {cI.x, cI.y};
+  const SimCoord c10 = {cI.x + 1, cI.y};
+  const SimCoord c01 = {cI.x, cI.y + 1};
+  const SimCoord c11 = {cI.x + 1, cI.y + 1};
 
-  const f32 v000 = sim_grid_get_bounded(g, c000, fallback);
-  const f32 v100 = sim_grid_get_bounded(g, c100, fallback);
-  const f32 v010 = sim_grid_get_bounded(g, c010, fallback);
-  const f32 v110 = sim_grid_get_bounded(g, c110, fallback);
-  const f32 v001 = sim_grid_get_bounded(g, c001, fallback);
-  const f32 v101 = sim_grid_get_bounded(g, c101, fallback);
-  const f32 v011 = sim_grid_get_bounded(g, c011, fallback);
-  const f32 v111 = sim_grid_get_bounded(g, c111, fallback);
+  const f32 v00 = sim_grid_get_bounded(g, c00, fallback);
+  const f32 v10 = sim_grid_get_bounded(g, c10, fallback);
+  const f32 v01 = sim_grid_get_bounded(g, c01, fallback);
+  const f32 v11 = sim_grid_get_bounded(g, c11, fallback);
 
-  const f32 fX = c.x - (f32)cI.x;
-  const f32 fY = c.y - (f32)cI.y;
-  const f32 fZ = c.z - (f32)cI.z;
+  const f32 fracX = c.x - (f32)cI.x;
+  const f32 fracY = c.y - (f32)cI.y;
 
-  const f32 x00 = math_lerp(v000, v100, fX);
-  const f32 x10 = math_lerp(v010, v110, fX);
-  const f32 x01 = math_lerp(v001, v101, fX);
-  const f32 x11 = math_lerp(v011, v111, fX);
+  const f32 x0 = math_lerp(v00, v10, fracX);
+  const f32 x1 = math_lerp(v01, v11, fracX);
 
-  const f32 y0 = math_lerp(x00, x10, fY);
-  const f32 y1 = math_lerp(x01, x11, fY);
-
-  return math_lerp(y0, y1, fZ);
+  return math_lerp(x0, x1, fracY);
 }
 
 typedef struct {
-  u32 width, height, depth;
+  SimCoord position;
+  f32      smokeAmount, angle /* in radians */, force;
+} SimEmitter;
+
+typedef struct {
+  u32 width, height;
+
+  u32 solverIterations;
+  f32 density;
+  f32 pressureDecay;
+  f32 velocityDiffusion;
+  f32 smokeDiffusion;
+  f32 smokeDecay;
+
+  bool     push;
+  SimCoord pushCoord;
+  f32      pushPressure;
+
+  bool         pull;
+  SimCoordFrac pullCoord;
+  f32          pullForce;
+
+  bool     guide;
+  SimCoord guideCoord;
+  f32      guideForce;
+  f32      guideAngle;
+
+  SimEmitter emitters[4];
+  u32        emitterCount;
 
   // NOTE: Velocities are stored at the edges, not the cell centers.
-  SimGrid velocitiesX; // (width + 1) height * depth
-  SimGrid velocitiesY; // width * (height + 1) * depth
-  SimGrid velocitiesZ; // width * height * (depth + 1)
+  SimGrid velocitiesX; // (width + 1) height
+  SimGrid velocitiesY; // width * (height + 1)
 
   SimGrid pressure;
   SimGrid smoke;
   BitSet  solid;
 } SimState;
 
-// static SimState sim_state_create(const u32 width, const height, )
+static SimState sim_state_create(const u32 width, const u32 height) {
+  SimState s = {
+      .width  = width,
+      .height = height,
+
+      .solverIterations  = 128,
+      .density           = 10.0f,
+      .pressureDecay     = 0.5f,
+      .velocityDiffusion = 0.5f,
+      .smokeDiffusion    = 0.05f,
+      .smokeDecay        = 0.01f,
+      .pushPressure      = 100.0f,
+      .pullForce         = 100.0f,
+      .guideForce        = 500.0f,
+      .guideAngle        = math_pi_f32,
+
+      .velocitiesX = sim_grid_create(g_allocHeap, width + 1, height),
+      .velocitiesY = sim_grid_create(g_allocHeap, width, height + 1),
+      .pressure    = sim_grid_create(g_allocHeap, width, height),
+      .smoke       = sim_grid_create(g_allocHeap, width, height),
+      .solid       = alloc_alloc(g_allocHeap, bits_to_bytes(height * width) + 1, 1),
+  };
+
+  sim_grid_clear(&s.velocitiesX);
+  sim_grid_clear(&s.velocitiesY);
+  sim_grid_clear(&s.pressure);
+  sim_grid_clear(&s.smoke);
+  mem_set(s.solid, 0);
+
+  return s;
+}
+
+static void sim_state_destroy(SimState* s) {
+  sim_grid_destroy(g_allocHeap, &s->velocitiesX);
+  sim_grid_destroy(g_allocHeap, &s->velocitiesY);
+  sim_grid_destroy(g_allocHeap, &s->pressure);
+  sim_grid_destroy(g_allocHeap, &s->smoke);
+  alloc_free(g_allocHeap, s->solid);
+}
+
+static bool sim_emitter_add(SimState* s, const SimEmitter e) {
+  if (s->emitterCount == array_elems(s->emitters)) {
+    return false;
+  }
+  s->emitters[s->emitterCount++] = e;
+  return true;
+}
+
+static bool sim_emitter_add_default(SimState* s, const SimCoord c) {
+  return sim_emitter_add(
+      s,
+      (SimEmitter){
+          .angle       = math_pi_f32 * 0.75f,
+          .force       = 1000.0f,
+          .position    = c,
+          .smokeAmount = 5.0f,
+      });
+}
+
+static SimEmitter* sim_emitter_get(SimState* s, const SimCoord c) {
+  for (u32 i = 0; i != s->emitterCount; ++i) {
+    if (s->emitters[i].position.x == c.x && s->emitters[i].position.y == c.y) {
+      return &s->emitters[i];
+    }
+  }
+  return null;
+}
+
+static void sim_emitter_remove(SimState* s, const SimEmitter* e) {
+  const u32 index  = e - s->emitters;
+  const u32 toMove = (s->emitterCount - 1) - index;
+  if (toMove) {
+    const Mem dst = mem_create(&s->emitters[index], toMove * sizeof(SimEmitter));
+    const Mem src = mem_create(&s->emitters[index + 1], toMove * sizeof(SimEmitter));
+    mem_move(dst, src);
+  }
+  --s->emitterCount;
+}
+
+static bool sim_solid(const SimState* s, const SimCoord c) {
+  if (!sim_coord_valid(c, s->width, s->height)) {
+    return false;
+  }
+  return bitset_test(s->solid, c.y * s->width + c.x);
+}
+
+static void sim_solid_flip(SimState* s, const SimCoord c) {
+  diag_assert(sim_coord_valid(c, s->width, s->height));
+  bitset_flip(s->solid, c.y * s->width + c.x);
+}
+
+static void sim_solid_set(SimState* s, const SimCoord c) {
+  diag_assert(sim_coord_valid(c, s->width, s->height));
+  bitset_set(s->solid, c.y * s->width + c.x);
+}
+
+static void sim_solid_set_border(SimState* s) {
+  for (u32 y = 0; y != s->height; ++y) {
+    for (u32 x = 0; x != s->width; ++x) {
+      if (!x || !y || x == (s->width - 1) || y == (s->height - 1)) {
+        bitset_set(s->solid, y * s->width + x);
+      }
+    }
+  }
+}
+
+static void sim_solid_clear(SimState* s) { bitset_clear_all(s->solid); }
+
+static f32 sim_pressure(const SimState* s, const SimCoord c) {
+  if (sim_solid(s, c)) {
+    return 0.0f;
+  }
+  return sim_grid_get_bounded(&s->pressure, c, 0.0f /* fallback */);
+}
+
+static void sim_pressure_clear(SimState* s) { sim_grid_clear(&s->pressure); }
+
+static f32 sim_smoke(const SimState* s, const SimCoord c) {
+  return sim_grid_get_bounded(&s->smoke, c, 0.0f /* fallback */);
+}
+
+static void sim_smoke_emit(SimState* s, const SimCoord c, const f32 smoke) {
+  sim_grid_add(&s->smoke, c, smoke);
+}
+
+static f32 sim_smoke_sum(const SimState* s) { return sim_grid_sum(&s->smoke); }
+
+static void sim_smoke_clear(SimState* s) { sim_grid_clear(&s->smoke); }
+
+static void sim_velocity_add(SimState* s, const SimCoord c, const f32 vX, const f32 vY) {
+  sim_grid_add(&s->velocitiesX, c, vX);                        // Left.
+  sim_grid_add(&s->velocitiesX, (SimCoord){c.x + 1, c.y}, vX); // Right.
+  sim_grid_add(&s->velocitiesY, c, vY);                        // Bottom.
+  sim_grid_add(&s->velocitiesY, (SimCoord){c.x, c.y + 1}, vY); // Top.
+}
+
+static void sim_velocity_clear(SimState* s) {
+  sim_grid_clear(&s->velocitiesX);
+  sim_grid_clear(&s->velocitiesY);
+}
+
+static void sim_velocity_randomize(SimState* s) {
+  sim_grid_rand(&s->velocitiesX, -25.0f, 25.0f);
+  sim_grid_rand(&s->velocitiesY, -25.0f, 25.0f);
+}
+
+static f32 sim_velocity_bottom(const SimState* s, const SimCoord c) {
+  return sim_grid_get_bounded(&s->velocitiesY, c, 0.0f /* fallback */);
+}
+
+static f32 sim_velocity_top(const SimState* s, const SimCoord c) {
+  const SimCoord cAbove = {c.x, c.y + 1};
+  return sim_grid_get_bounded(&s->velocitiesY, cAbove, 0.0f /* fallback */);
+}
+
+static f32 sim_velocity_left(const SimState* s, const SimCoord c) {
+  return sim_grid_get_bounded(&s->velocitiesX, c, 0.0f /* fallback */);
+}
+
+static f32 sim_velocity_right(const SimState* s, const SimCoord c) {
+  const SimCoord cRight = {c.x + 1, c.y};
+  return sim_grid_get_bounded(&s->velocitiesX, cRight, 0.0f /* fallback */);
+}
+
+static f32 sim_velocity_x(const SimState* s, const SimCoord c) {
+  return sim_grid_sample(&s->velocitiesX, (SimCoordFrac){c.x + 0.5f, c.y}, 0.0f);
+}
+
+static f32 sim_velocity_y(const SimState* s, const SimCoord c) {
+  return sim_grid_sample(&s->velocitiesY, (SimCoordFrac){c.x, c.y + 0.5f}, 0.0f);
+}
+
+static f32 sim_velocity_divergence(const SimState* s, const SimCoord c) {
+  const f32 vTop    = sim_velocity_top(s, c);
+  const f32 vLeft   = sim_velocity_left(s, c);
+  const f32 vRight  = sim_velocity_right(s, c);
+  const f32 vBottom = sim_velocity_bottom(s, c);
+  return (vRight - vLeft) + (vTop - vBottom);
+}
+
+static f32 sim_velocity_divergence_sum(const SimState* s) {
+  f32 result = 0;
+  for (u32 y = 0; y != s->height; ++y) {
+    for (u32 x = 0; x != s->width; ++x) {
+      const f32 diverence = sim_velocity_divergence(s, (SimCoord){x, y});
+      result += math_abs(diverence);
+    }
+  }
+  return result;
+}
+
+static f32 sim_speed(const SimState* s, const SimCoord c) {
+  const f32 vX       = sim_velocity_x(s, c);
+  const f32 vY       = sim_velocity_y(s, c);
+  const f32 speedSqr = vX * vX + vY * vY;
+  return speedSqr != 0.0f ? intrinsic_sqrt_f32(speedSqr) : 0.0f;
+}
+
+static f32 sim_angle(const SimState* s, const SimCoord c) {
+  const f32 vX = sim_velocity_x(s, c);
+  const f32 vY = sim_velocity_y(s, c);
+  if (math_abs(vX) < f32_epsilon && math_abs(vY) < f32_epsilon) {
+    return 0.0f;
+  }
+  return math_atan2_f32(vY, vX);
+}
+
+static bool sim_pushed(const SimState* s, const SimCoord c) {
+  return s->push && sim_coord_dist_manhattan(s->pushCoord, c) <= 1;
+}
+
+static f32 sim_pull_force(const SimState* s, const SimCoordFrac c) {
+  const f32 smoke        = sim_grid_sample(&s->smoke, c, 0.0f);
+  const f32 smokeClamped = math_clamp_f32(smoke, 0.0f, 1.0f);
+
+  // NOTE: Arbitrary easing function at the moment.
+  return 1.0f - math_pow_f32(1.0f - smokeClamped, 3.0f);
+}
+
+static void sim_pull(SimState* s, const SimCoordFrac target, const f32 force) {
+  // Horizontal.
+  for (u32 y = 0; y != s->velocitiesX.height; ++y) {
+    for (u32 x = 0; x != s->velocitiesX.width; ++x) {
+      const f32 deltaX  = target.x - x;
+      const f32 deltaY  = target.y - (y + 0.5f);
+      const f32 distSqr = deltaX * deltaX + deltaY * deltaY;
+      if (distSqr < f32_epsilon) {
+        continue;
+      }
+      const f32 forceMul  = sim_pull_force(s, (SimCoordFrac){x, y + 0.5f});
+      const f32 veloDelta = deltaX / intrinsic_sqrt_f32(distSqr) * force * forceMul;
+      sim_grid_add(&s->velocitiesX, (SimCoord){x, y}, veloDelta);
+    }
+  }
+
+  // Vertical.
+  for (u32 y = 0; y != s->velocitiesY.height; ++y) {
+    for (u32 x = 0; x != s->velocitiesY.width; ++x) {
+      const f32 deltaX  = target.x - (x + 0.5f);
+      const f32 deltaY  = target.y - y;
+      const f32 distSqr = deltaX * deltaX + deltaY * deltaY;
+      if (distSqr < f32_epsilon) {
+        continue;
+      }
+      const f32 forceMul  = sim_pull_force(s, (SimCoordFrac){x + 0.5f, y});
+      const f32 veloDelta = deltaY / intrinsic_sqrt_f32(distSqr) * force * forceMul;
+      sim_grid_add(&s->velocitiesY, (SimCoord){x, y}, veloDelta);
+    }
+  }
+}
+
+static void sim_diffuse_velocity_grid(SimGrid* g, const f32 diffusion, const f32 dt) {
+  for (u32 y = 0; y != g->height; ++y) {
+    for (u32 x = 0; x != g->width; ++x) {
+      const f32 vCenter = sim_grid_get(g, (SimCoord){x, y});
+      const f32 vTop    = sim_grid_get_bounded(g, (SimCoord){x + 0, y + 1}, vCenter);
+      const f32 vLeft   = sim_grid_get_bounded(g, (SimCoord){x - 1, y + 0}, vCenter);
+      const f32 vRight  = sim_grid_get_bounded(g, (SimCoord){x + 1, y + 0}, vCenter);
+      const f32 vBottom = sim_grid_get_bounded(g, (SimCoord){x + 0, y - 1}, vCenter);
+
+      const f32 laplacian = vLeft + vRight + vTop + vBottom - 4 * vCenter;
+      const f32 vDiffused = vCenter + laplacian * diffusion * dt;
+      sim_grid_set(g, (SimCoord){x, y}, vDiffused);
+    }
+  }
+}
+
+static void sim_diffuse_velocity(SimState* s, const f32 dt) {
+  if (s->velocityDiffusion >= f32_epsilon) {
+    sim_diffuse_velocity_grid(&s->velocitiesX, s->velocityDiffusion, dt);
+    sim_diffuse_velocity_grid(&s->velocitiesY, s->velocityDiffusion, dt);
+  }
+}
+
+static void sim_diffuse_smoke(SimState* s, const f32 dt) {
+  if (s->smokeDiffusion < f32_epsilon) {
+    return;
+  }
+  for (u32 y = 0; y != s->height; ++y) {
+    for (u32 x = 0; x != s->width; ++x) {
+      if (sim_solid(s, (SimCoord){x, y})) {
+        continue;
+      }
+      const f32 vCenter = sim_grid_get(&s->smoke, (SimCoord){x, y});
+      const f32 vTop    = sim_grid_get_bounded(&s->smoke, (SimCoord){x + 0, y + 1}, 0.0f);
+      const f32 vLeft   = sim_grid_get_bounded(&s->smoke, (SimCoord){x - 1, y + 0}, 0.0f);
+      const f32 vRight  = sim_grid_get_bounded(&s->smoke, (SimCoord){x + 1, y + 0}, 0.0f);
+      const f32 vBottom = sim_grid_get_bounded(&s->smoke, (SimCoord){x + 0, y - 1}, 0.0f);
+
+      const f32 laplacian     = vLeft + vRight + vTop + vBottom - 4 * vCenter;
+      const f32 smokeDiffused = vCenter + s->smokeDiffusion * dt * laplacian;
+      const f32 smokeNew      = smokeDiffused * math_exp_f32(-dt * s->smokeDecay);
+      sim_grid_set(&s->smoke, (SimCoord){x, y}, smokeNew);
+    }
+  }
+}
+
+static void sim_advect_velocity(SimState* s, const f32 dt) {
+  SimGrid velocitiesXNew = sim_grid_create(g_allocScratch, s->width + 1, s->height);
+  SimGrid velocitiesYNew = sim_grid_create(g_allocScratch, s->width, s->height + 1);
+
+  // Horizontal.
+  for (u32 y = 0; y != velocitiesXNew.height; ++y) {
+    for (u32 x = 0; x != velocitiesXNew.width; ++x) {
+      const SimCoord cellLeft  = (SimCoord){x - 1, y};
+      const SimCoord cellRight = (SimCoord){x + 0, y};
+      if (sim_solid(s, cellLeft) || sim_solid(s, cellRight)) {
+        sim_grid_set(&velocitiesXNew, (SimCoord){x, y}, 0.0f);
+        continue;
+      }
+      const f32 veloX = sim_grid_get(&s->velocitiesX, (SimCoord){x, y});
+      const f32 veloY = sim_grid_sample(&s->velocitiesY, (SimCoordFrac){x - 0.5f, y + 0.5f}, 0.0f);
+
+      const f32 prevX = x - veloX * dt;
+      const f32 prevY = y - veloY * dt;
+
+      const f32 veloNew = sim_grid_sample(&s->velocitiesX, (SimCoordFrac){prevX, prevY}, 0.0f);
+      sim_grid_set(&velocitiesXNew, (SimCoord){x, y}, veloNew);
+    }
+  }
+
+  // Vertical.
+  for (u32 y = 0; y != velocitiesYNew.height; ++y) {
+    for (u32 x = 0; x != velocitiesYNew.width; ++x) {
+      const SimCoord cellBottom = (SimCoord){x, y - 1};
+      const SimCoord cellTop    = (SimCoord){x, y + 0};
+      if (sim_solid(s, cellBottom) || sim_solid(s, cellTop)) {
+        sim_grid_set(&velocitiesYNew, (SimCoord){x, y}, 0.0f);
+        continue;
+      }
+      const f32 veloX = sim_grid_sample(&s->velocitiesX, (SimCoordFrac){x + 0.5f, y - 0.5f}, 0.0f);
+      const f32 veloY = sim_grid_get(&s->velocitiesY, (SimCoord){x, y});
+
+      const f32 prevX = x - veloX * dt;
+      const f32 prevY = y - veloY * dt;
+
+      const f32 veloNew = sim_grid_sample(&s->velocitiesY, (SimCoordFrac){prevX, prevY}, 0.0f);
+      sim_grid_set(&velocitiesYNew, (SimCoord){x, y}, veloNew);
+    }
+  }
+
+  sim_grid_copy(&s->velocitiesX, &velocitiesXNew);
+  sim_grid_copy(&s->velocitiesY, &velocitiesYNew);
+}
+
+static void sim_advect_smoke(SimState* s, const f32 dt) {
+  SimGrid smokeNew = sim_grid_create(g_allocScratch, s->width, s->height);
+
+  for (u32 y = 0; y != s->height; ++y) {
+    for (u32 x = 0; x != s->width; ++x) {
+      const SimCoord cell = {x, y};
+      if (sim_solid(s, cell) || sim_pushed(s, cell)) {
+        sim_grid_set(&smokeNew, cell, 0);
+        continue;
+      }
+      const f32 veloX = sim_velocity_x(s, (SimCoord){x, y});
+      const f32 veloY = sim_velocity_y(s, (SimCoord){x, y});
+
+      const f32 prevX     = x - veloX * dt;
+      const f32 prevY     = y - veloY * dt;
+      const f32 prevSmoke = sim_grid_sample(&s->smoke, (SimCoordFrac){prevX, prevY}, 0.0f);
+      sim_grid_set(&smokeNew, cell, prevSmoke);
+    }
+  }
+
+  sim_grid_copy(&s->smoke, &smokeNew);
+}
+
+static void sim_solve_pressure(SimState* s, const f32 dt) {
+  if (s->density <= f32_epsilon) {
+    return;
+  }
+  for (u32 y = 0; y != s->height; ++y) {
+    for (u32 x = 0; x != s->width; ++x) {
+      const bool flowTop    = !sim_solid(s, (SimCoord){x + 0, y + 1});
+      const bool flowLeft   = !sim_solid(s, (SimCoord){x - 1, y + 0});
+      const bool flowRight  = !sim_solid(s, (SimCoord){x + 1, y + 0});
+      const bool flowBottom = !sim_solid(s, (SimCoord){x + 0, y - 1});
+      const u8   flowCount  = flowLeft + flowRight + flowTop + flowBottom;
+
+      f32 newPressure;
+      if (sim_pushed(s, (SimCoord){x, y})) {
+        newPressure = s->pushPressure;
+      } else if (sim_solid(s, (SimCoord){x, y}) || !flowCount) {
+        newPressure = 0.0f;
+      } else {
+        const f32 pressureTop    = sim_pressure(s, (SimCoord){x, y + 1}) * flowTop;
+        const f32 pressureLeft   = sim_pressure(s, (SimCoord){x - 1, y}) * flowLeft;
+        const f32 pressureRight  = sim_pressure(s, (SimCoord){x + 1, y}) * flowRight;
+        const f32 pressureBottom = sim_pressure(s, (SimCoord){x, y - 1}) * flowBottom;
+        const f32 pressureSum    = pressureRight + pressureLeft + pressureTop + pressureBottom;
+
+        const f32 velTop    = sim_velocity_top(s, (SimCoord){x, y});
+        const f32 velLeft   = sim_velocity_left(s, (SimCoord){x, y});
+        const f32 velRight  = sim_velocity_right(s, (SimCoord){x, y});
+        const f32 velBottom = sim_velocity_bottom(s, (SimCoord){x, y});
+        const f32 velDelta  = velRight - velLeft + velTop - velBottom;
+
+        newPressure = (pressureSum - s->density * velDelta / dt) / flowCount;
+        newPressure -= newPressure * math_min(0.f, s->density * s->pressureDecay * dt);
+        diag_assert(!float_isnan(newPressure) && !float_isinf(newPressure));
+      }
+      sim_grid_set(&s->pressure, (SimCoord){x, y}, newPressure);
+    }
+  }
+}
+
+static void sim_solve_velocity(SimState* s, const f32 dt) {
+  if (s->density <= f32_epsilon) {
+    return;
+  }
+  const f32 k = dt / s->density;
+
+  // Horizontal.
+  for (u32 y = 0; y != s->velocitiesX.height; ++y) {
+    for (u32 x = 0; x != s->velocitiesX.width; ++x) {
+      const SimCoord cellLeft  = (SimCoord){x - 1, y};
+      const SimCoord cellRight = (SimCoord){x + 0, y};
+      if (sim_solid(s, cellLeft) || sim_solid(s, cellRight)) {
+        sim_grid_set(&s->velocitiesX, (SimCoord){x, y}, 0.0f);
+        continue;
+      }
+      const f32 pressureLeft  = sim_pressure(s, cellLeft);
+      const f32 pressureRight = sim_pressure(s, cellRight);
+      sim_grid_add(&s->velocitiesX, (SimCoord){x, y}, k * -(pressureRight - pressureLeft));
+    }
+  }
+
+  // Vertical.
+  for (u32 y = 0; y != s->velocitiesY.height; ++y) {
+    for (u32 x = 0; x != s->velocitiesY.width; ++x) {
+      const SimCoord cellBottom = (SimCoord){x, y - 1};
+      const SimCoord cellTop    = (SimCoord){x, y + 0};
+      if (sim_solid(s, cellBottom) || sim_solid(s, cellTop)) {
+        sim_grid_set(&s->velocitiesY, (SimCoord){x, y}, 0.0f);
+        continue;
+      }
+      const f32 pressureBottom = sim_pressure(s, cellBottom);
+      const f32 pressureTop    = sim_pressure(s, cellTop);
+      sim_grid_add(&s->velocitiesY, (SimCoord){x, y}, k * -(pressureTop - pressureBottom));
+    }
+  }
+}
+
+static bool sim_update(SimState* s, const f32 dt) {
+  if (dt < f32_epsilon) {
+    return false;
+  }
+
+  for (u32 i = 0; i != s->emitterCount; ++i) {
+    const SimEmitter* e = &s->emitters[i];
+    sim_smoke_emit(s, e->position, e->smokeAmount * dt);
+    const f32 veloX = math_cos_f32(e->angle) * e->force * dt;
+    const f32 veloY = math_sin_f32(e->angle) * e->force * dt;
+    sim_velocity_add(s, e->position, veloX, veloY);
+  }
+
+  if (s->pull) {
+    sim_pull(s, s->pullCoord, s->pullForce * dt);
+  }
+  if (s->guide) {
+    const f32 veloX = math_cos_f32(s->guideAngle) * s->guideForce * dt;
+    const f32 veloY = math_sin_f32(s->guideAngle) * s->guideForce * dt;
+    sim_velocity_add(s, s->guideCoord, veloX, veloY);
+  }
+
+  sim_diffuse_velocity(s, dt);
+  sim_diffuse_smoke(s, dt);
+  sim_advect_velocity(s, dt);
+  sim_advect_smoke(s, dt);
+  for (u32 i = 0; i != s->solverIterations; ++i) {
+    sim_solve_pressure(s, dt);
+    sim_solve_velocity(s, dt);
+  }
+  return true;
+}
+
+static void sim_clear(SimState* s) {
+  sim_smoke_clear(s);
+  sim_velocity_clear(s);
+  sim_pressure_clear(s);
+}
+
+typedef enum {
+  DemoInteract_None,
+  DemoInteract_Pull,
+  DemoInteract_Push,
+  DemoInteract_Guide,
+  DemoInteract_Solid,
+  DemoInteract_Emitter,
+
+  DemoInteract_Count,
+} DemoInteract;
+
+static const String g_demoInteractNames[] = {
+    string_static("None"),
+    string_static("Pull"),
+    string_static("Push"),
+    string_static("Guide"),
+    string_static("Solid"),
+    string_static("Emitter"),
+};
+ASSERT(array_elems(g_demoInteractNames) == DemoInteract_Count, "Incorrect number of names");
+
+typedef enum {
+  DemoLayer_SmokeInterp,
+  DemoLayer_Smoke,
+  DemoLayer_Pressure,
+  DemoLayer_Velocity,
+  DemoLayer_Divergence,
+
+  DemoLayer_Count,
+} DemoLayer;
+
+static const String g_demoLayerNames[] = {
+    string_static("SmokeInterp"),
+    string_static("Smoke"),
+    string_static("Pressure"),
+    string_static("Velocity"),
+    string_static("Divergence"),
+};
+ASSERT(array_elems(g_demoLayerNames) == DemoLayer_Count, "Incorrect number of names");
+
+typedef enum {
+  DemoOverlay_Solid      = 1 << 0,
+  DemoOverlay_Emitter    = 1 << 1,
+  DemoOverlay_Velo       = 1 << 2,
+  DemoOverlay_VeloCenter = 1 << 3,
+
+  DemoOverlay_Count   = 4,
+  DemoOverlay_Default = DemoOverlay_Solid | DemoOverlay_Emitter,
+} DemoOverlay;
+
+static const String g_demoOverlayNames[] = {
+    string_static("Solid"),
+    string_static("Emitter"),
+    string_static("Velo"),
+    string_static("Velo Center"),
+};
+ASSERT(array_elems(g_demoOverlayNames) == DemoOverlay_Count, "Incorrect number of names");
+
+typedef enum {
+  DemoLabel_None,
+  DemoLabel_Smoke,
+  DemoLabel_Pressure,
+  DemoLabel_Speed,
+  DemoLabel_Angle,
+  DemoLabel_Divergence,
+
+  DemoLabel_Count,
+} DemoLabel;
+
+static const String g_demoLabelNames[] = {
+    string_static("None"),
+    string_static("Smoke"),
+    string_static("Pressure"),
+    string_static("Speed"),
+    string_static("Angle"),
+    string_static("Divergence"),
+};
+ASSERT(array_elems(g_demoLabelNames) == DemoLabel_Count, "Incorrect number of names");
 
 ecs_comp_define(DemoComp) {
   EcsEntityId window;
+  EcsEntityId uiCanvas;
   TimeSteady  lastTime;
 
-  u32 targetX, targetY, targetZ;
+  SimState sim;
 
-  u32    simWidth, simHeight, simDepth;
-  f32*   velocitiesX; // f32[(simWidth + 1) simHeight * simDepth]
-  f32*   velocitiesY; // f32[simWidth * (simHeight + 1) * simDepth]
-  f32*   velocitiesZ; // f32[simWidth * simHeight * (simDepth + 1)]
-  f32*   pressure;    // f32[simWidth * simHeight * simDepth]
-  f32*   smoke;       // f32[simWidth * simHeight * simDepth]
-  BitSet solidMap;    // bit[simWidth * simHeight * simDepth]
+  bool         hideMenu;
+  DemoInteract interact;
+  DemoLayer    layer;
+  DemoOverlay  overlay;
+  DemoLabel    label;
 };
 
-ecs_comp_define(DemoWindowComp) { EcsEntityId uiCanvas; };
-
-static DemoComp* demo_create(EcsWorld* world) {
-  const EcsEntityId global = ecs_world_global(world);
-
-  DemoComp* demo = ecs_world_add_t(
-      world,
-      global,
-      DemoComp,
-      .targetX   = 12,
-      .targetY   = 2,
-      .targetZ   = 12,
-      .simWidth  = 25,
-      .simHeight = 5,
-      .simDepth  = 25);
-
-  const u32 width  = demo->simWidth;
-  const u32 height = demo->simHeight;
-  const u32 depth  = demo->simDepth;
-
-  demo->velocitiesX = alloc_array_t(g_allocHeap, f32, (width + 1) * height * depth);
-  demo->velocitiesY = alloc_array_t(g_allocHeap, f32, width * (height + 1) * depth);
-  demo->velocitiesZ = alloc_array_t(g_allocHeap, f32, width * height * (depth + 1));
-  demo->pressure    = alloc_array_t(g_allocHeap, f32, width * height * depth);
-  demo->smoke       = alloc_array_t(g_allocHeap, f32, width * height * depth);
-  demo->solidMap    = alloc_alloc(g_allocHeap, bits_to_bytes(width * height * depth) + 1, 1);
-
-  mem_set(mem_create(demo->velocitiesX, sizeof(f32) * (width + 1) * height * depth), 0);
-  mem_set(mem_create(demo->velocitiesY, sizeof(f32) * width * (height + 1) * depth), 0);
-  mem_set(mem_create(demo->velocitiesZ, sizeof(f32) * width * height * (depth + 1)), 0);
-  mem_set(mem_create(demo->pressure, sizeof(f32) * width * height * depth), 0);
-  mem_set(mem_create(demo->smoke, sizeof(f32) * width * height * depth), 0);
-  mem_set(demo->solidMap, 0);
-
-  return demo;
-}
-
-static void demo_destroy(void* data) {
-  DemoComp* comp   = data;
-  const u32 width  = comp->simWidth;
-  const u32 height = comp->simHeight;
-  const u32 depth  = comp->simDepth;
-
-  alloc_free_array_t(g_allocHeap, comp->velocitiesX, (width + 1) * height * depth);
-  alloc_free_array_t(g_allocHeap, comp->velocitiesY, width * (height + 1) * depth);
-  alloc_free_array_t(g_allocHeap, comp->velocitiesZ, width * height * (depth + 1));
-  alloc_free_array_t(g_allocHeap, comp->pressure, width * height * depth);
-  alloc_free_array_t(g_allocHeap, comp->smoke, width * height * depth);
-  alloc_free(g_allocHeap, comp->solidMap);
-}
-
-static EcsEntityId demo_window_create(EcsWorld* world, const u16 width, const u16 height) {
+static EcsEntityId demo_create_window(EcsWorld* world, const u16 width, const u16 height) {
   const GapVector      size           = {.width = (i32)width, .height = (i32)height};
   const GapWindowFlags flags          = GapWindowFlags_Default;
   const GapWindowMode  mode           = GapWindowMode_Windowed;
   const GapIcon        icon           = GapIcon_Main;
   const String         versionScratch = version_str_scratch(g_versionExecutable);
   const String         titleScratch = fmt_write_scratch("Smoke Demo v{}", fmt_text(versionScratch));
-  const EcsEntityId    window = gap_window_create(world, mode, flags, size, icon, titleScratch);
-
-  const EcsEntityId uiCanvas = ui_canvas_create(world, window, UiCanvasCreateFlags_ToBack);
-  ecs_world_add_t(world, window, DemoWindowComp, .uiCanvas = uiCanvas);
-  return window;
+  return gap_window_create(world, mode, flags, size, icon, titleScratch);
 }
 
-typedef struct {
-  EcsWorld* world;
-  DemoComp* demo;
-  f32       dt; // In seconds.
+static DemoComp* demo_create(EcsWorld* world, const u16 winWidth, const u16 winHeight) {
+  const EcsEntityId global = ecs_world_global(world);
 
-  EcsEntityId     winEntity;
-  DemoWindowComp* winDemo;
-  GapWindowComp*  winComp;
-  UiCanvasComp*   winCanvas;
-} DemoUpdateContext;
+  DemoComp* demo = ecs_world_add_t(world, global, DemoComp);
 
-static f32 sim_time_to_seconds(const TimeDuration dur) {
+  demo->window   = demo_create_window(world, winWidth, winHeight);
+  demo->uiCanvas = ui_canvas_create(world, demo->window, UiCanvasCreateFlags_ToBack);
+  demo->overlay  = DemoOverlay_Default;
+
+  rend_settings_window_init(world, demo->window)->flags |= RendFlags_2D;
+
+  const u32 simWidth  = 40;
+  const u32 simHeight = 30;
+  demo->sim           = sim_state_create(simWidth, simHeight);
+
+  sim_emitter_add_default(&demo->sim, (SimCoord){37, 2});
+
+  sim_solid_set(&demo->sim, (SimCoord){34, 4});
+  sim_solid_set(&demo->sim, (SimCoord){35, 5});
+
+  return demo;
+}
+
+static void demo_destroy(void* data) {
+  DemoComp* comp = data;
+  sim_state_destroy(&comp->sim);
+}
+
+static f32 demo_time_to_seconds(const TimeDuration dur) {
   static const f64 g_toSecMul = 1.0 / (f64)time_second;
   return (f32)((f64)dur * g_toSecMul);
 }
 
-static u32 sim_index(const u32 width, const u32 height, const u32 x, const u32 y, const u32 z) {
-  return z * height * width + y * width + x;
+static f32 demo_cell_size(UiCanvasComp* c, const SimState* s) {
+  const f32 border = 10;
+  const f32 xSize  = (ui_canvas_resolution(c).width - border * 2) / (f32)s->width;
+  const f32 ySize  = (ui_canvas_resolution(c).height - border * 2) / (f32)s->height;
+  return math_min(xSize, ySize);
 }
 
-static u32 sim_cell_index(DemoUpdateContext* ctx, const u32 x, const u32 y, const u32 z) {
-  return sim_index(ctx->demo->simWidth, ctx->demo->simHeight, x, y, z);
-}
-
-static bool sim_solid(DemoUpdateContext* ctx, const u32 x, const u32 y, const u32 z) {
-  return bitset_test(ctx->demo->solidMap, sim_cell_index(ctx, x, y, z));
-}
-
-static void sim_solid_flip(DemoUpdateContext* ctx, const u32 x, const u32 y, const u32 z) {
-  bitset_flip(ctx->demo->solidMap, sim_cell_index(ctx, x, y, z));
-}
-
-static void sim_solid_set(DemoUpdateContext* ctx, const u32 x, const u32 y, const u32 z) {
-  bitset_set(ctx->demo->solidMap, sim_cell_index(ctx, x, y, z));
-}
-
-static f32 sim_pressure(DemoUpdateContext* ctx, const u32 x, const u32 y, const u32 z) {
-  if (sim_solid(ctx, x, y, z)) {
-    return 0.0f;
-  }
-  return ctx->demo->pressure[sim_cell_index(ctx, x, y, z)];
-}
-
-static f32 sim_smoke(DemoUpdateContext* ctx, const u32 x, const u32 y, const u32 z) {
-  return ctx->demo->smoke[sim_cell_index(ctx, x, y, z)];
-}
-
-static void
-sim_smoke_emit(DemoUpdateContext* ctx, const u32 x, const u32 y, const u32 z, const f32 smoke) {
-  ctx->demo->smoke[sim_cell_index(ctx, x, y, z)] += smoke;
-}
-
-static f32 sim_velocity_bottom(DemoUpdateContext* ctx, const u32 x, const u32 y, const u32 z) {
-  const u32 width = ctx->demo->simWidth;
-  return ctx->demo->velocitiesY[y * width + x];
-}
-
-static f32 sim_velocity_top(DemoUpdateContext* ctx, const u32 x, const u32 y, const u32 z) {
-  const u32 width = ctx->demo->simWidth;
-  return ctx->demo->velocitiesY[(y + 1) * width + x];
-}
-
-static f32 sim_velocity_left(DemoUpdateContext* ctx, const u32 x, const u32 y, const u32 z) {
-  const u32 width = ctx->demo->simWidth + 1;
-  return ctx->demo->velocitiesX[y * width + x];
-}
-
-static f32 sim_velocity_right(DemoUpdateContext* ctx, const u32 x, const u32 y, const u32 z) {
-  const u32 width = ctx->demo->simWidth + 1;
-  return ctx->demo->velocitiesX[y * width + (x + 1)];
-}
-
-static f32 sim_sample(const f32* v, const u32 width, const u32 height, const f32 x, const f32 y) {
-  const i32 left   = (i32)math_round_down_f32(x);
-  const i32 bottom = (i32)math_round_down_f32(y);
-  const i32 right  = left + 1;
-  const i32 top    = bottom + 1;
-
-  const f32 xFrac = math_clamp_f32(x - left, 0.0f, 1.0f);
-  const f32 yFrac = math_clamp_f32(y - bottom, 0.0f, 1.0f);
-
-  f32 v1, v2, v3, v4;
-
-  // TODO: There are a bunch of redundant checks here.
-  if (top >= 0 && (u32)top < height && left >= 0 && (u32)left < width) {
-    v1 = v[top * width + left];
-  } else {
-    v1 = 0.0f;
-  }
-  if (top >= 0 && (u32)top < height && right >= 0 && (u32)right < width) {
-    v2 = v[top * width + right];
-  } else {
-    v2 = 0.0f;
-  }
-  if (bottom >= 0 && (u32)bottom < height && left >= 0 && (u32)left < width) {
-    v3 = v[bottom * width + left];
-  } else {
-    v3 = 0.0f;
-  }
-  if (bottom >= 0 && (u32)bottom < height && right >= 0 && (u32)right < width) {
-    v4 = v[bottom * width + right];
-  } else {
-    v4 = 0.0f;
-  }
-
-  const f32 vTop    = math_lerp(v1, v2, xFrac);
-  const f32 vBottom = math_lerp(v3, v4, xFrac);
-  return math_lerp(vBottom, vTop, yFrac);
-}
-
-static bool sim_pushed(DemoUpdateContext* ctx, const u32 x, const u32 y) {
-  if (!ctx->demo->push) {
-    return false;
-  }
-  if (x == ctx->demo->targetX && y == ctx->demo->targetY) {
-    return true;
-  }
-  if (x == (ctx->demo->targetX + 1) && y == ctx->demo->targetY) {
-    return true;
-  }
-  if (x == (ctx->demo->targetX - 1) && y == ctx->demo->targetY) {
-    return true;
-  }
-  if (x == ctx->demo->targetX && (y + 1) == ctx->demo->targetY) {
-    return true;
-  }
-  if (x == ctx->demo->targetX && (y - 1) == ctx->demo->targetY) {
-    return true;
-  }
-  return false;
-}
-
-static void sim_velocity_diffuse(DemoUpdateContext* ctx) {
-  const u32 width  = ctx->demo->simWidth;
-  const u32 height = ctx->demo->simHeight;
-
-  if (ctx->demo->velDiffusion < f32_epsilon) {
-    return;
-  }
-
-  // Horizontal.
-  for (u32 y = 0; y != height; ++y) {
-    for (u32 x = 0; x != (width + 1); ++x) {
-      const f32 velCenter = ctx->demo->velocitiesX[y * (width + 1) + x];
-      const f32 velTop  = (y + 1) != height ? ctx->demo->velocitiesX[(y + 1) * (width + 1) + x] : 0;
-      const f32 velLeft = x ? ctx->demo->velocitiesX[y * (width + 1) + (x - 1)] : 0;
-      const f32 velRight  = x != width ? ctx->demo->velocitiesX[y * (width + 1) + (x + 1)] : 0;
-      const f32 velBottom = y ? ctx->demo->velocitiesX[(y - 1) * (width + 1) + x] : 0;
-
-      const f32 laplacian   = velLeft + velRight + velTop + velBottom - 4 * velCenter;
-      const f32 velDiffused = velCenter + laplacian * ctx->demo->velDiffusion * ctx->dt;
-      ctx->demo->velocitiesX[y * (width + 1) + x] = velDiffused;
-    }
-  }
-
-  // Vertical.
-  for (u32 y = 0; y != (height + 1); ++y) {
-    for (u32 x = 0; x != width; ++x) {
-      const f32 velCenter = ctx->demo->velocitiesY[y * width + x];
-      const f32 velTop    = y != height ? ctx->demo->velocitiesY[(y + 1) * width + x] : 0;
-      const f32 velLeft   = x ? ctx->demo->velocitiesY[y * width + (x - 1)] : 0;
-      const f32 velRight  = (x + 1) != width ? ctx->demo->velocitiesY[y * width + (x + 1)] : 0;
-      const f32 velBottom = y ? ctx->demo->velocitiesY[(y - 1) * width + x] : 0;
-
-      const f32 laplacian   = velLeft + velRight + velTop + velBottom - 4 * velCenter;
-      const f32 velDiffused = velCenter + laplacian * ctx->demo->velDiffusion * ctx->dt;
-      ctx->demo->velocitiesY[y * width + x] = velDiffused;
-    }
-  }
-}
-
-static void sim_smoke_diffuse(DemoUpdateContext* ctx) {
-  const u32 width  = ctx->demo->simWidth;
-  const u32 height = ctx->demo->simHeight;
-
-  if (ctx->demo->smokeDiffusion < f32_epsilon) {
-    return;
-  }
-
-  for (u32 y = 0; y != height; ++y) {
-    for (u32 x = 0; x != width; ++x) {
-      if (sim_solid(ctx, x, y)) {
-        continue;
-      }
-      const f32 smokeCenter = ctx->demo->smoke[y * width + x];
-      const f32 smokeTop    = (y + 1) != height ? ctx->demo->smoke[(y + 1) * width + x] : 0;
-      const f32 smokeLeft   = x ? ctx->demo->smoke[y * width + (x - 1)] : 0;
-      const f32 smokeRight  = (x + 1) != width ? ctx->demo->smoke[y * width + (x + 1)] : 0;
-      const f32 smokeBottom = y ? ctx->demo->smoke[(y - 1) * width + x] : 0;
-
-      const f32 laplacian = smokeLeft + smokeRight + smokeTop + smokeBottom - 4 * smokeCenter;
-
-      const f32 smokeNew = smokeCenter + ctx->demo->smokeDiffusion * ctx->dt * laplacian;
-      ctx->demo->smoke[y * width + x] = smokeNew * math_exp_f32(-ctx->dt * ctx->demo->smokeDecay);
-    }
-  }
-}
-
-static void sim_smoke_coalesce(DemoUpdateContext* ctx) {
-  const u32 width  = ctx->demo->simWidth;
-  const u32 height = ctx->demo->simHeight;
-
-  const f32 k = 100.0f * ctx->dt;
-
-  // Horizontal.
-  for (u32 y = 0; y != height; ++y) {
-    for (u32 x = 0; x != (width + 1); ++x) {
-      const f32 smokeRight = x != width ? sim_smoke(ctx, x, y) : 0.0f;
-      const f32 smokeLeft  = x ? sim_smoke(ctx, x - 1, y) : 0.0f;
-      const f32 mul        = smokeRight - smokeLeft;
-      ctx->demo->velocitiesX[y * (width + 1) + x] += k * mul * mul;
-    }
-  }
-
-  // Vertical.
-  for (u32 y = 0; y != (height + 1); ++y) {
-    for (u32 x = 0; x != width; ++x) {
-      const f32 smokeTop    = y != height ? sim_smoke(ctx, x, y) : 0.0f;
-      const f32 smokeBottom = y ? sim_smoke(ctx, x, y - 1) : 0.0f;
-      const f32 mul         = smokeTop - smokeBottom;
-      ctx->demo->velocitiesY[y * width + x] += k * mul * mul;
-    }
-  }
-}
-
-static void sim_velocity_advect(DemoUpdateContext* ctx) {
-  const u32 width  = ctx->demo->simWidth;
-  const u32 height = ctx->demo->simHeight;
-
-  f32* velocitiesX = alloc_array_t(g_allocScratch, f32, height * (width + 1));
-  f32* velocitiesY = alloc_array_t(g_allocScratch, f32, (height + 1) * width);
-
-  // Horizontal.
-  for (u32 y = 0; y != height; ++y) {
-    for (u32 x = 0; x != (width + 1); ++x) {
-      // Check if either the left or the right cell is solid.
-      if ((x && sim_solid(ctx, x - 1, y)) || (x != width && sim_solid(ctx, x, y))) {
-        velocitiesX[y * (width + 1) + x] = ctx->demo->velocitiesX[y * (width + 1) + x];
-        continue;
-      }
-      const f32 velX = ctx->demo->velocitiesX[y * (width + 1) + x];
-      const f32 velY = sim_sample(ctx->demo->velocitiesY, width, height + 1, x, y + 0.5f);
-
-      const f32 prevX = x - velX * ctx->dt;
-      const f32 prevY = y - velY * ctx->dt;
-
-      const f32 velNew = sim_sample(ctx->demo->velocitiesX, width + 1, height, prevX, prevY);
-
-      velocitiesX[y * (width + 1) + x] = velNew;
-    }
-  }
-
-  // Vertical.
-  for (u32 y = 0; y != (height + 1); ++y) {
-    for (u32 x = 0; x != width; ++x) {
-      // Check if either the top or the bottom cell is solid.
-      if ((y && sim_solid(ctx, x, y - 1)) || (y != height && sim_solid(ctx, x, y))) {
-        velocitiesY[y * width + x] = ctx->demo->velocitiesY[y * width + x];
-        continue;
-      }
-      const f32 velX = sim_sample(ctx->demo->velocitiesX, width + 1, height, x + 0.5f, y);
-      const f32 velY = ctx->demo->velocitiesY[y * width + x];
-
-      const f32 prevX = x - velX * ctx->dt;
-      const f32 prevY = y - velY * ctx->dt;
-
-      const f32 velNew = sim_sample(ctx->demo->velocitiesY, width, height + 1, prevX, prevY);
-      velocitiesY[y * width + x] = velNew;
-    }
-  }
-
-  mem_cpy(
-      mem_create(ctx->demo->velocitiesX, sizeof(f32) * height * (width + 1)),
-      mem_create(velocitiesX, sizeof(f32) * height * (width + 1)));
-
-  mem_cpy(
-      mem_create(ctx->demo->velocitiesY, sizeof(f32) * (height + 1) * width),
-      mem_create(velocitiesY, sizeof(f32) * (height + 1) * width));
-}
-
-static void sim_smoke_advect(DemoUpdateContext* ctx) {
-  const u32 width  = ctx->demo->simWidth;
-  const u32 height = ctx->demo->simHeight;
-
-  f32* smoke = alloc_array_t(g_allocScratch, f32, height * width);
-
-  for (u32 y = 0; y != height; ++y) {
-    for (u32 x = 0; x != width; ++x) {
-      if (sim_solid(ctx, x, y) || sim_pushed(ctx, x, y)) {
-        smoke[y * width + x] = 0.0f;
-        continue;
-      }
-      const f32 velX = sim_sample(ctx->demo->velocitiesX, width + 1, height, x + 0.5f, y + 0.5f);
-      const f32 velY = sim_sample(ctx->demo->velocitiesY, width, height + 1, x + 0.5f, y + 0.5f);
-
-      const f32 prevX = x - velX * ctx->dt;
-      const f32 prevY = y - velY * ctx->dt;
-
-      smoke[y * width + x] = sim_sample(ctx->demo->smoke, width, height, prevX, prevY);
-    }
-  }
-
-  mem_cpy(
-      mem_create(ctx->demo->smoke, sizeof(f32) * height * width),
-      mem_create(smoke, sizeof(f32) * height * width));
-}
-
-static f32 sim_smoke_count(DemoUpdateContext* ctx) {
-  const u32 width  = ctx->demo->simWidth;
-  const u32 height = ctx->demo->simHeight;
-
-  f32 smokeSum = 0;
-  for (u32 y = 0; y != height; ++y) {
-    for (u32 x = 0; x != width; ++x) {
-      smokeSum += ctx->demo->smoke[y * width + x];
-    }
-  }
-  return smokeSum;
-}
-
-static void
-sim_push(DemoUpdateContext* ctx, const u32 x, const u32 y, const f32 forceX, const f32 forceY) {
-  ctx->demo->velocitiesY[y * ctx->demo->simWidth + x] += forceY;             // Bottom.
-  ctx->demo->velocitiesY[(y + 1) * ctx->demo->simWidth + x] -= forceY;       // Top.
-  ctx->demo->velocitiesX[y * (ctx->demo->simWidth + 1) + x] += forceX;       // Left.
-  ctx->demo->velocitiesX[y * (ctx->demo->simWidth + 1) + (x + 1)] -= forceX; // Right.
-}
-
-static f32 sim_velocity_divergence(DemoUpdateContext* ctx, const u32 x, const u32 y) {
-  const f32 velTop    = sim_velocity_top(ctx, x, y);
-  const f32 velLeft   = sim_velocity_left(ctx, x, y);
-  const f32 velRight  = sim_velocity_right(ctx, x, y);
-  const f32 velBottom = sim_velocity_bottom(ctx, x, y);
-  return (velRight - velLeft) + (velTop - velBottom);
-}
-
-static f32 sim_speed(DemoUpdateContext* ctx, const u32 x, const u32 y) {
-  const u32 width    = ctx->demo->simWidth;
-  const u32 height   = ctx->demo->simHeight;
-  const f32 velX     = sim_sample(ctx->demo->velocitiesX, width + 1, height, x + 0.5f, y + 0.5f);
-  const f32 velY     = sim_sample(ctx->demo->velocitiesY, width, height + 1, x + 0.5f, y + 0.5f);
-  const f32 speedSqr = velX * velX + velY * velY;
-  return speedSqr != 0 ? intrinsic_sqrt_f32(speedSqr) : 0;
-}
-
-static void sim_solve_pressure(DemoUpdateContext* ctx) {
-  const u32 width   = ctx->demo->simWidth;
-  const u32 height  = ctx->demo->simHeight;
-  const f32 density = ctx->demo->density;
-
-  if (density < 0.01f) {
-    return;
-  }
-
-  const f32 pressureDecay = ctx->demo->density * 0.5f;
-
-  const u32 xMax = width - 1;
-  const u32 yMax = height - 1;
-
-  for (u32 y = 0; y != height; ++y) {
-    for (u32 x = 0; x != width; ++x) {
-
-      const bool flowTop    = !sim_solid(ctx, x + 0, y + 1);
-      const bool flowLeft   = !sim_solid(ctx, x - 1, y + 0);
-      const bool flowRight  = !sim_solid(ctx, x + 1, y + 0);
-      const bool flowBottom = !sim_solid(ctx, x + 0, y - 1);
-      const u8   flowCount  = flowLeft + flowRight + flowTop + flowBottom;
-
-      f32 newPressure;
-      if (sim_pushed(ctx, x, y)) {
-        newPressure = 500;
-      } else if (sim_solid(ctx, x, y) || !flowCount) {
-        newPressure = 0.0f;
-      } else {
-        const f32 pressureTop    = y != yMax ? (sim_pressure(ctx, x, y + 1) * flowTop) : 0.0f;
-        const f32 pressureLeft   = x ? (sim_pressure(ctx, x - 1, y) * flowLeft) : 0.0f;
-        const f32 pressureRight  = x != xMax ? (sim_pressure(ctx, x + 1, y) * flowRight) : 0.0f;
-        const f32 pressureBottom = y ? (sim_pressure(ctx, x, y - 1) * flowBottom) : 0.0f;
-        const f32 pressureSum    = pressureRight + pressureLeft + pressureTop + pressureBottom;
-
-        const f32 velTop    = sim_velocity_top(ctx, x, y);
-        const f32 velLeft   = sim_velocity_left(ctx, x, y);
-        const f32 velRight  = sim_velocity_right(ctx, x, y);
-        const f32 velBottom = sim_velocity_bottom(ctx, x, y);
-        const f32 velDelta  = velRight - velLeft + velTop - velBottom;
-
-        newPressure = (pressureSum - density * velDelta / ctx->dt) / flowCount;
-        newPressure -= newPressure * pressureDecay * ctx->dt;
-      }
-      ctx->demo->pressure[y * width + x] = newPressure;
-    }
-  }
-}
-
-static void sim_velocity_update(DemoUpdateContext* ctx) {
-  if (ctx->demo->density < 0.01f) {
-    return;
-  }
-  const f32 k      = ctx->dt / ctx->demo->density;
-  const u32 width  = ctx->demo->simWidth;
-  const u32 height = ctx->demo->simHeight;
-
-  // Horizontal.
-  for (u32 y = 0; y != height; ++y) {
-    for (u32 x = 0; x != (width + 1); ++x) {
-      // Check if either the left or the right cell is solid.
-      if ((x && sim_solid(ctx, x - 1, y)) || (x != width && sim_solid(ctx, x, y))) {
-        ctx->demo->velocitiesX[y * (width + 1) + x] = 0;
-        continue;
-      }
-      const f32 pressureRight = x != width ? sim_pressure(ctx, x, y) : 0.0f;
-      const f32 pressureLeft  = x ? sim_pressure(ctx, x - 1, y) : 0.0f;
-      ctx->demo->velocitiesX[y * (width + 1) + x] -= k * (pressureRight - pressureLeft);
-    }
-  }
-
-  // Vertical.
-  for (u32 y = 0; y != (height + 1); ++y) {
-    for (u32 x = 0; x != width; ++x) {
-      // Check if either the top or the bottom cell is solid.
-      if ((y && sim_solid(ctx, x, y - 1)) || (y != height && sim_solid(ctx, x, y))) {
-        ctx->demo->velocitiesY[y * width + x] = 0;
-        continue;
-      }
-      const f32 pressureTop    = y != height ? sim_pressure(ctx, x, y) : 0.0f;
-      const f32 pressureBottom = y ? sim_pressure(ctx, x, y - 1) : 0.0f;
-      ctx->demo->velocitiesY[y * width + x] -= k * (pressureTop - pressureBottom);
-    }
-  }
-}
-
-static void sim_smoke_pull(DemoUpdateContext* ctx) {
-  const u32 width  = ctx->demo->simWidth;
-  const u32 height = ctx->demo->simHeight;
-
-  const f32 force = 5.0f;
-
-  // Horizontal.
-  for (u32 y = 0; y != height; ++y) {
-    for (u32 x = 0; x != (width + 1); ++x) {
-      const f32 posX    = x;
-      const f32 posY    = y + 0.5f;
-      const f32 smoke   = sim_sample(ctx->demo->smoke, width, height, posX, posY);
-      const f32 dX      = ctx->demo->targetX - posX;
-      const f32 dY      = ctx->demo->targetY - posY;
-      const f32 distSqr = dX * dX + dY * dY;
-      if (distSqr < f32_epsilon) {
-        continue;
-      }
-      const f32 dist         = intrinsic_sqrt_f32(distSqr);
-      const f32 smokeClamped = math_clamp_f32(smoke, 0.0f, 1.0f);
-      // TODO: This is very arbitrary to avoid scaling the force very high if the smoke is very
-      // concentrated.
-      const f32 forceMul = 1.0f - math_pow_f32(1.0f - smokeClamped, 3.0f);
-      ctx->demo->velocitiesX[y * (width + 1) + x] += (dX / dist) * force * ctx->dt * forceMul;
-    }
-  }
-
-  // Vertical.
-  for (u32 y = 0; y != (height + 1); ++y) {
-    for (u32 x = 0; x != width; ++x) {
-      const f32 posX    = x + 0.5f;
-      const f32 posY    = y;
-      const f32 smoke   = sim_sample(ctx->demo->smoke, width, height, posX, posY);
-      const f32 dX      = ctx->demo->targetX - posX;
-      const f32 dY      = ctx->demo->targetY - posY;
-      const f32 distSqr = dX * dX + dY * dY;
-      if (distSqr < f32_epsilon) {
-        continue;
-      }
-      const f32 dist         = intrinsic_sqrt_f32(distSqr);
-      const f32 smokeClamped = math_clamp_f32(smoke, 0.0f, 1.0f);
-      const f32 forceMul     = 1.0f - math_pow_f32(1.0f - smokeClamped, 3.0f);
-      ctx->demo->velocitiesY[y * width + x] += (dY / dist) * force * ctx->dt * forceMul;
-    }
-  }
-}
-
-static void sim_update(DemoUpdateContext* ctx) {
-  const f32 smokeAmount = sim_smoke_count(ctx);
-  if (smokeAmount < 350.0f) {
-    sim_smoke_emit(ctx, 4, 3, 25.0f * ctx->dt);
-    //  sim_push(ctx, 4, 3, 0, 1000.0f * ctx->dt);
-    //  sim_smoke_emit(ctx, 10, 3, 2.0f * ctx->dt);
-    //  sim_push(ctx, 10, 3, 0, 1000.0f * ctx->dt);
-  }
-  // log_i("Update", log_param("smoke", fmt_float(smokeAmount)));
-
-  (void)sim_smoke_coalesce;
-  // sim_smoke_coalesce(ctx);
-  sim_smoke_pull(ctx);
-  sim_velocity_diffuse(ctx);
-  sim_smoke_diffuse(ctx);
-  sim_smoke_advect(ctx);
-  sim_velocity_advect(ctx);
-  if (ctx->demo->solve) {
-    for (u32 i = 0; i != ctx->demo->solverIterations; ++i) {
-      sim_solve_pressure(ctx);
-    }
-  }
-  if (ctx->demo->updateVelocities) {
-    sim_velocity_update(ctx);
-  }
-}
-
-static void sim_velocity_randomize(DemoUpdateContext* ctx) {
-  const u32 width  = ctx->demo->simWidth;
-  const u32 height = ctx->demo->simHeight;
-
-  // Horizontal.
-  for (u32 y = 0; y != height; ++y) {
-    for (u32 x = 0; x != (width + 1); ++x) {
-      ctx->demo->velocitiesX[y * (width + 1) + x] = rng_sample_f32(g_rng) * 2.0f - 1.0f;
-    }
-  }
-
-  // Vertical.
-  for (u32 y = 0; y != (height + 1); ++y) {
-    for (u32 x = 0; x != width; ++x) {
-      ctx->demo->velocitiesY[y * width + x] = rng_sample_f32(g_rng) * 2.0f - 1.0f;
-    }
-  }
-}
-
-static void sim_velocity_clear(DemoUpdateContext* ctx) {
-  const u32 width  = ctx->demo->simWidth;
-  const u32 height = ctx->demo->simHeight;
-
-  mem_set(mem_create(ctx->demo->velocitiesX, sizeof(f32) * height * (width + 1)), 0);
-  mem_set(mem_create(ctx->demo->velocitiesY, sizeof(f32) * (height + 1) * width), 0);
-}
-
-static void sim_pressure_clear(DemoUpdateContext* ctx) {
-  const u32 width  = ctx->demo->simWidth;
-  const u32 height = ctx->demo->simHeight;
-  mem_set(mem_create(ctx->demo->pressure, sizeof(f32) * height * width), 0);
-}
-
-static void sim_solid_set_border(DemoUpdateContext* ctx) {
-  const u32 width  = ctx->demo->simWidth;
-  const u32 height = ctx->demo->simHeight;
-  for (u32 y = 0; y != height; ++y) {
-    for (u32 x = 0; x != width; ++x) {
-      const bool solid = !x || !y || x == (width - 1) || y == (height - 1);
-      if (solid) {
-        bitset_set(ctx->demo->solidMap, y * width + x);
-      } else {
-        bitset_clear(ctx->demo->solidMap, y * width + x);
-      }
-    }
-  }
-}
-
-static void sim_draw(DemoUpdateContext* ctx) {
-  ui_canvas_id_block_next(ctx->winCanvas);
-  ui_layout_push(ctx->winCanvas);
-  ui_style_push(ctx->winCanvas);
-
-  const u32 simWidth  = ctx->demo->simWidth;
-  const u32 simHeight = ctx->demo->simHeight;
-
-  const UiVector canvasSize = ui_canvas_resolution(ctx->winCanvas);
-  const UiVector cellSize   = ui_vector(40, 40);
-  const UiVector cellOrg    = {
-      canvasSize.width * 0.5f - simWidth * cellSize.width * 0.5f,
-      canvasSize.height * 0.5f - simHeight * cellSize.height * 0.5f,
+static UiVector demo_cell_origin(UiCanvasComp* c, const SimState* s, const f32 cellSize) {
+  return (UiVector){
+      ui_canvas_resolution(c).width * 0.5f - s->width * cellSize * 0.5f,
+      ui_canvas_resolution(c).height * 0.5f - s->height * cellSize * 0.5f,
   };
+}
 
-  const GapVector cursorDelta = gap_window_param(ctx->winComp, GapParam_CursorDelta);
-  const f32       distSqr     = cursorDelta.x * cursorDelta.x + cursorDelta.y * cursorDelta.y;
-  if (distSqr > f32_epsilon) {
-    const f32 dist  = intrinsic_sqrt_f32(distSqr);
-    ctx->demo->dirX = cursorDelta.x / dist;
-    ctx->demo->dirY = cursorDelta.y / dist;
-    log_i(
-        "Dir",
-        log_param("x", fmt_float(ctx->demo->dirX)),
-        log_param("y", fmt_float(ctx->demo->dirY)));
+static UiVector demo_cell_pos(const f32 cellSize, const UiVector cellOrigin, const SimCoord c) {
+  return ui_vector(cellOrigin.x + c.x * cellSize, cellOrigin.y + c.y * cellSize);
+}
+
+static SimCoordFrac demo_input(UiCanvasComp* c, const f32 cellSize, const UiVector cellOrigin) {
+  diag_assert(cellSize > f32_epsilon);
+  const UiVector inputPos = ui_canvas_input_pos(c);
+  return (SimCoordFrac){
+      (inputPos.x - cellOrigin.x) / cellSize,
+      (inputPos.y - cellOrigin.y) / cellSize,
+  };
+}
+
+static void demo_interact(DemoComp* d, const GapWindowComp* w, const SimCoordFrac inputPos) {
+  switch (d->interact) {
+  case DemoInteract_None:
+    break;
+  case DemoInteract_Pull:
+    d->sim.pull      = true;
+    d->sim.pullCoord = inputPos;
+    if (gap_window_key_pressed(w, GapKey_Plus) || gap_window_key_pressed(w, GapKey_ArrowUp)) {
+      d->sim.pullForce = math_min(d->sim.pullForce * 2.0f, 1e4f);
+    }
+    if (gap_window_key_pressed(w, GapKey_Minus) || gap_window_key_pressed(w, GapKey_ArrowDown)) {
+      d->sim.pullForce = math_max(d->sim.pullForce / 2.0f, 1.0f);
+    }
+    break;
+  case DemoInteract_Push:
+    d->sim.pushCoord = sim_coord_round_down(inputPos);
+    d->sim.push      = sim_coord_valid(d->sim.pushCoord, d->sim.width, d->sim.height);
+    if (gap_window_key_pressed(w, GapKey_Plus) || gap_window_key_pressed(w, GapKey_ArrowUp)) {
+      d->sim.pushPressure = math_min(d->sim.pushPressure * 2.0f, 1e4f);
+    }
+    if (gap_window_key_pressed(w, GapKey_Minus) || gap_window_key_pressed(w, GapKey_ArrowDown)) {
+      d->sim.pushPressure = math_max(d->sim.pushPressure / 2.0f, 1.0f);
+    }
+    break;
+  case DemoInteract_Guide: {
+    const f32 scroll  = gap_window_param(w, GapParam_ScrollDelta).y;
+    d->sim.guideCoord = sim_coord_round_down(inputPos);
+    d->sim.guide      = sim_coord_valid(d->sim.guideCoord, d->sim.width, d->sim.height);
+    d->sim.guideAngle = math_mod_f32(d->sim.guideAngle + scroll * 0.1f, math_pi_f32 * 2.0f);
+    if (gap_window_key_pressed(w, GapKey_Plus) || gap_window_key_pressed(w, GapKey_ArrowUp)) {
+      d->sim.guideForce = math_min(d->sim.guideForce * 2.0f, 1e4f);
+    }
+    if (gap_window_key_pressed(w, GapKey_Minus) || gap_window_key_pressed(w, GapKey_ArrowDown)) {
+      d->sim.guideForce = math_max(d->sim.guideForce / 2.0f, 1.0f);
+    }
+    break;
   }
-
-  ctx->demo->push = false;
-
-  ui_layout_resize(ctx->winCanvas, UiAlign_BottomLeft, cellSize, UiBase_Absolute, Ui_XY);
-  for (u32 y = 0; y != simHeight; ++y) {
-    for (u32 x = 0; x != simWidth; ++x) {
-      const f32 divergence = sim_velocity_divergence(ctx, x, y);
-      const f32 pressure   = sim_pressure(ctx, x, y);
-      const f32 speed      = sim_speed(ctx, x, y);
-      const f32 smoke      = sim_smoke(ctx, x, y);
-
-      (void)speed;
-      (void)divergence;
-      (void)pressure;
-
-      const f32 velX =
-          sim_sample(ctx->demo->velocitiesX, simWidth + 1, simHeight, x + 0.5f, y + 0.5f);
-      const f32 velY =
-          sim_sample(ctx->demo->velocitiesY, simWidth, simHeight + 1, x + 0.5f, y + 0.5f);
-
-      UiColor color;
-      if (sim_solid(ctx, x, y)) {
-        color = ui_color_gray;
+  case DemoInteract_Solid: {
+    const bool     click = gap_window_key_pressed(w, GapKey_MouseLeft);
+    const SimCoord coord = sim_coord_round_down(inputPos);
+    if (sim_coord_valid(coord, d->sim.width, d->sim.height) && click) {
+      sim_solid_flip(&d->sim, coord);
+    }
+    break;
+  }
+  case DemoInteract_Emitter: {
+    const bool     click   = gap_window_key_pressed(w, GapKey_MouseLeft);
+    const SimCoord coord   = sim_coord_round_down(inputPos);
+    SimEmitter*    emitter = sim_emitter_get(&d->sim, coord);
+    if (emitter) {
+      if (gap_window_key_pressed(w, GapKey_MouseLeft)) {
+        sim_emitter_remove(&d->sim, emitter);
       } else {
-        // const f32 frac = math_clamp_f32(pressure * 0.01f, -1.0f, 1.0f);
-        // color          = ui_color_lerp(ui_color_green, ui_color_red, (frac + 1.0f) * 0.5f);
-
-        const f32 frac = math_clamp_f32(smoke * 10, 0.0f, 1.0f);
-        color          = ui_color_lerp(ui_color_green, ui_color_red, frac);
+        const f32 scroll = gap_window_param(w, GapParam_ScrollDelta).y;
+        emitter->angle   = math_mod_f32(emitter->angle + scroll * 0.1f, math_pi_f32 * 2.0f);
       }
-      ui_style_color(ctx->winCanvas, color);
+    } else if (sim_coord_valid(coord, d->sim.width, d->sim.height) && click) {
+      sim_emitter_add_default(&d->sim, coord);
+    }
+    break;
+  }
+  case DemoInteract_Count:
+    UNREACHABLE
+  }
+}
 
-      const UiVector pos = ui_vector(cellOrg.x + x * cellSize.x, cellOrg.y + y * cellSize.y);
-      ui_layout_set_pos(ctx->winCanvas, UiBase_Canvas, pos, UiBase_Absolute);
-      const UiId id = ui_canvas_draw_glyph(
-          ctx->winCanvas, UiShape_Square, 5, UiFlags_Interactable | UiFlags_InteractSupportAlt);
-      const UiStatus status = ui_canvas_elem_status(ctx->winCanvas, id);
-      if (status == UiStatus_Activated) {
-        sim_solid_flip(ctx, x, y);
-      } else if (status == UiStatus_ActivatedAlt) {
-      }
-      if (status == UiStatus_Hovered /* && gap_window_key_down(ctx->winComp, GapKey_Tab) */) {
-        ctx->demo->targetX = x;
-        ctx->demo->targetY = y;
+static void demo_draw_grid(
+    UiCanvasComp*  c,
+    const SimGrid* g,
+    const f32      cellSize,
+    const UiVector cellOrigin,
+    const f32      minVal,
+    const f32      maxVal,
+    const UiColor  minColor,
+    const UiColor  maxColor) {
 
-        if (gap_window_key_down(ctx->winComp, GapKey_Tab)) {
-          sim_solid_set(ctx, x, y);
-        }
-        ctx->demo->push = gap_window_key_down(ctx->winComp, GapKey_Control);
-        // if (gap_window_key_down(ctx->winComp, GapKey_Control)) {
-        //   const f32 forceMul = 1000.0f;
-        //   sim_push(
-        //       ctx,
-        //       x,
-        //       y,
-        //       ctx->demo->dirX * forceMul * ctx->dt,
-        //       ctx->demo->dirY * forceMul * ctx->dt);
-        // }
-      }
+  ui_layout_push(c);
+  ui_layout_resize(c, UiAlign_BottomLeft, ui_vector(cellSize, cellSize), UiBase_Absolute, Ui_XY);
+  ui_style_push(c);
+  for (u32 y = 0; y != g->height; ++y) {
+    for (u32 x = 0; x != g->width; ++x) {
+      const SimCoord coord = {x, y};
+      const f32      v     = sim_grid_get(g, coord);
+      const f32      frac  = math_clamp_f32(math_unlerp(minVal, maxVal, v), 0.0f, 1.0f);
 
-      {
-        const f32      lineColorFrac = math_clamp_f32(math_abs(divergence), 0.0f, 1.0f);
-        const UiColor  lineColor     = ui_color_lerp(ui_color_green, ui_color_red, lineColorFrac);
-        const UiVector posLineA      = {
-            cellOrg.x + x * cellSize.x + cellSize.x * 0.5f,
-            cellOrg.y + y * cellSize.y + cellSize.y * 0.5f,
-        };
-        const f32 lineScale = 10.0f;
-        ui_style_color(ctx->winCanvas, lineColor);
-        ui_line(
-            ctx->winCanvas,
-            posLineA,
-            ui_vector(posLineA.x + velX * lineScale, posLineA.y + velY * lineScale),
-            .base  = UiBase_Absolute,
-            .width = 4.0f);
-      }
+      ui_style_color(c, ui_color_lerp(minColor, maxColor, frac));
+      ui_layout_set_pos(
+          c, UiBase_Canvas, demo_cell_pos(cellSize, cellOrigin, coord), UiBase_Absolute);
 
-      ui_style_color(ctx->winCanvas, ui_color_white);
-      const String label = fmt_write_scratch(
-          "{}\n{}",
-          fmt_float(
-              pressure,
-              .minDecDigits    = 2,
-              .maxDecDigits    = 2,
-              .expThresholdPos = f64_max,
-              .expThresholdNeg = 0),
-          fmt_float(
-              divergence,
-              .minDecDigits    = 2,
-              .maxDecDigits    = 2,
-              .expThresholdPos = f64_max,
-              .expThresholdNeg = 0));
-      ui_canvas_draw_text(ctx->winCanvas, label, 10, UiAlign_MiddleCenter, UiFlags_None);
+      ui_canvas_draw_glyph(c, UiShape_Square, 5, UiFlags_None);
+    }
+  }
+  ui_style_pop(c);
+  ui_layout_pop(c);
+}
+
+static void demo_draw_grid_sampled(
+    UiCanvasComp*  c,
+    const SimGrid* g,
+    const f32      cellSize,
+    const UiVector cellOrigin,
+    const f32      minVal,
+    const f32      maxVal,
+    const UiColor  minColor,
+    const UiColor  maxColor,
+    const u32      density) {
+
+  const u32 stepsX          = g->width * density;
+  const u32 stepsY          = g->height * density;
+  const f32 sampledCellSize = cellSize / density;
+
+  ui_layout_push(c);
+  ui_layout_resize(
+      c,
+      UiAlign_BottomLeft,
+      ui_vector(sampledCellSize + 1, sampledCellSize + 1),
+      UiBase_Absolute,
+      Ui_XY);
+  ui_style_push(c);
+  ui_style_outline(c, 0);
+  for (u32 y = 0; y != stepsY; ++y) {
+    const f32 fracY = ((f32)y / (f32)(stepsY - 1)) * (g->height - 1);
+    for (u32 x = 0; x != stepsX; ++x) {
+      const f32 fracX = ((f32)x / (f32)(stepsX - 1)) * (g->width - 1);
+      const f32 v     = sim_grid_sample(g, (SimCoordFrac){fracX, fracY}, 0.0f);
+      const f32 frac  = math_clamp_f32(math_unlerp(minVal, maxVal, v), 0.0f, 1.0f);
+
+      ui_style_color(c, ui_color_lerp(minColor, maxColor, frac));
+      ui_layout_set_pos(
+          c,
+          UiBase_Canvas,
+          demo_cell_pos(sampledCellSize, cellOrigin, (SimCoord){x, y}),
+          UiBase_Absolute);
+
+      ui_canvas_draw_glyph(c, UiShape_Square, 5, UiFlags_None);
+    }
+  }
+  ui_style_pop(c);
+  ui_layout_pop(c);
+}
+
+static void demo_draw_velocity_edge(
+    UiCanvasComp*   c,
+    const SimState* s,
+    const f32       cellSize,
+    const UiVector  cellOrigin,
+    const f32       velocityScale) {
+
+  ui_layout_push(c);
+  ui_style_push(c);
+
+  const f32 dotSize   = 6.0f;
+  const f32 lineWidth = 3.0f;
+
+  ui_layout_resize(c, UiAlign_BottomLeft, ui_vector(dotSize, dotSize), UiBase_Absolute, Ui_XY);
+
+  // Horizontal.
+  ui_style_color(c, ui_color_red);
+  for (u32 y = 0; y != s->velocitiesX.height; ++y) {
+    for (u32 x = 0; x != s->velocitiesX.width; ++x) {
+      const f32      val = sim_grid_get(&s->velocitiesX, (SimCoord){x, y});
+      const UiVector pA  = {cellOrigin.x + x * cellSize, cellOrigin.y + (y + 0.5f) * cellSize};
+      const UiVector pB  = {pA.x + val * cellSize * velocityScale, pA.y};
+
+      ui_line(c, pA, pB, .base = UiBase_Absolute, .width = lineWidth);
+
+      ui_layout_set_center(c, UiBase_Canvas, pA, UiBase_Absolute);
+      ui_canvas_draw_glyph(c, UiShape_Circle, 0, UiFlags_None);
     }
   }
 
-  ui_layout_resize(ctx->winCanvas, UiAlign_BottomLeft, ui_vector(5, 5), UiBase_Absolute, Ui_XY);
+  // Vertical.
+  ui_style_color(c, ui_color_green);
+  for (u32 y = 0; y != s->velocitiesY.height; ++y) {
+    for (u32 x = 0; x != s->velocitiesY.width; ++x) {
+      const f32      val = sim_grid_get(&s->velocitiesY, (SimCoord){x, y});
+      const UiVector pA  = {cellOrigin.x + (x + 0.5f) * cellSize, cellOrigin.y + y * cellSize};
+      const UiVector pB  = {pA.x, pA.y + val * cellSize * velocityScale};
 
-  // Horizontal.
-  // for (u32 y = 0; y != simHeight; ++y) {
-  //   for (u32 x = 0; x != (simWidth + 1); ++x) {
-  //     const f32      velo = ctx->demo->velocitiesX[y * (simWidth + 1) + x];
-  //     const UiVector pos  = {
-  //         cellOrg.x + x * cellSize.x,
-  //         cellOrg.y + y * cellSize.y + cellSize.y * 0.5f,
-  //     };
-  //     ui_style_color(ctx->winCanvas, ui_color_red);
-  //     ui_layout_set_pos(
-  //         ctx->winCanvas, UiBase_Canvas, ui_vector(pos.x - 2.5f, pos.y - 2.5f), UiBase_Absolute);
-  //     ui_canvas_draw_glyph(ctx->winCanvas, UiShape_Circle, 0, UiFlags_None);
+      ui_line(c, pA, pB, .base = UiBase_Absolute, .width = lineWidth);
 
-  //     ui_line(
-  //         ctx->winCanvas,
-  //         pos,
-  //         ui_vector(pos.x + velo * cellSize.x * 0.05f, pos.y),
-  //         .base  = UiBase_Absolute,
-  //         .width = 3.0f);
-  //   }
-  // }
-
-  // // Vertical.
-  // for (u32 y = 0; y != (simHeight + 1); ++y) {
-  //   for (u32 x = 0; x != simWidth; ++x) {
-  //     const f32      velo = ctx->demo->velocitiesY[y * simWidth + x];
-  //     const UiVector pos  = {
-  //         cellOrg.x + x * cellSize.x + cellSize.x * 0.5f,
-  //         cellOrg.y + y * cellSize.y,
-  //     };
-  //     ui_style_color(ctx->winCanvas, ui_color_green);
-  //     ui_layout_set_pos(
-  //         ctx->winCanvas, UiBase_Canvas, ui_vector(pos.x - 2.5f, pos.y - 2.5f), UiBase_Absolute);
-  //     ui_canvas_draw_glyph(ctx->winCanvas, UiShape_Circle, 0, UiFlags_None);
-
-  //     ui_line(
-  //         ctx->winCanvas,
-  //         pos,
-  //         ui_vector(pos.x, pos.y + velo * cellSize.y * 0.05f),
-  //         .base  = UiBase_Absolute,
-  //         .width = 3.0f);
-  //   }
-  // }
-
-  ui_style_pop(ctx->winCanvas);
-  ui_layout_pop(ctx->winCanvas);
-  ui_canvas_id_block_next(ctx->winCanvas);
-}
-
-static void demo_draw_menu_frame(const DemoUpdateContext* ctx) {
-  ui_style_push(ctx->winCanvas);
-  ui_style_outline(ctx->winCanvas, 5);
-  ui_style_color(ctx->winCanvas, ui_color(0, 0, 0, 200));
-  ui_canvas_draw_glyph(ctx->winCanvas, UiShape_Circle, 10, UiFlags_None);
-  ui_style_pop(ctx->winCanvas);
-}
-
-static void demo_draw_numbox_f32(const DemoUpdateContext* ctx, const String label, f32* value) {
-  demo_draw_menu_frame(ctx);
-  ui_layout_push(ctx->winCanvas);
-  static const UiVector g_frameInset = {-30, -20};
-  ui_layout_grow(ctx->winCanvas, UiAlign_MiddleCenter, g_frameInset, UiBase_Absolute, Ui_XY);
-  ui_label(ctx->winCanvas, label);
-  ui_layout_inner(
-      ctx->winCanvas, UiBase_Current, UiAlign_MiddleRight, ui_vector(0.5f, 1), UiBase_Current);
-  f64 val = *value;
-  if (ui_numbox(ctx->winCanvas, &val)) {
-    *value = (f32)val;
+      ui_layout_set_center(c, UiBase_Canvas, pA, UiBase_Absolute);
+      ui_canvas_draw_glyph(c, UiShape_Circle, 0, UiFlags_None);
+    }
   }
-  ui_layout_pop(ctx->winCanvas);
+
+  ui_style_pop(c);
+  ui_layout_pop(c);
 }
 
-static void demo_draw_numbox_u32(const DemoUpdateContext* ctx, const String label, u32* value) {
-  demo_draw_menu_frame(ctx);
-  ui_layout_push(ctx->winCanvas);
-  static const UiVector g_frameInset = {-30, -20};
-  ui_layout_grow(ctx->winCanvas, UiAlign_MiddleCenter, g_frameInset, UiBase_Absolute, Ui_XY);
-  ui_label(ctx->winCanvas, label);
-  ui_layout_inner(
-      ctx->winCanvas, UiBase_Current, UiAlign_MiddleRight, ui_vector(0.5f, 1), UiBase_Current);
-  f64 val = *value;
-  if (ui_numbox(ctx->winCanvas, &val, .step = 1.0)) {
-    *value = (u32)val;
+static void demo_draw_velocity_center(
+    UiCanvasComp*   c,
+    const SimState* s,
+    const f32       cellSize,
+    const UiVector  cellOrigin,
+    const f32       velocityScale) {
+
+  ui_layout_push(c);
+  ui_style_push(c);
+
+  const f32 dotSize   = 6.0f;
+  const f32 lineWidth = 3.0f;
+
+  ui_layout_resize(c, UiAlign_BottomLeft, ui_vector(dotSize, dotSize), UiBase_Absolute, Ui_XY);
+  ui_style_color(c, ui_color_green);
+  for (u32 y = 0; y != s->height; ++y) {
+    for (u32 x = 0; x != s->width; ++x) {
+      const f32 vX = sim_grid_sample(&s->velocitiesX, (SimCoordFrac){x + 0.5f, y + 0.5f}, 0.0f);
+      const f32 vY = sim_grid_sample(&s->velocitiesY, (SimCoordFrac){x + 0.5f, y + 0.5f}, 0.0f);
+
+      const UiVector pA = {
+          cellOrigin.x + (x + 0.5f) * cellSize,
+          cellOrigin.y + (y + 0.5f) * cellSize,
+      };
+      const UiVector pB = {
+          pA.x + vX * cellSize * velocityScale,
+          pA.y + vY * cellSize * velocityScale,
+      };
+
+      ui_line(c, pA, pB, .base = UiBase_Absolute, .width = lineWidth);
+
+      ui_layout_set_center(c, UiBase_Canvas, pA, UiBase_Absolute);
+      ui_canvas_draw_glyph(c, UiShape_Circle, 0, UiFlags_None);
+    }
   }
-  ui_layout_pop(ctx->winCanvas);
+  ui_style_pop(c);
+  ui_layout_pop(c);
 }
 
-static void demo_draw_menu(const DemoUpdateContext* ctx) {
-  const UiVector size    = {250, 40};
-  const UiVector spacing = {5, 5};
+static void demo_draw_velocity_divergence(
+    UiCanvasComp*   c,
+    const SimState* s,
+    const f32       cellSize,
+    const UiVector  cellOrigin,
+    const f32       scale) {
 
-  ui_layout_inner(ctx->winCanvas, UiBase_Canvas, UiAlign_BottomLeft, size, UiBase_Absolute);
-  ui_layout_move(ctx->winCanvas, ui_vector(spacing.x, spacing.y), UiBase_Absolute, Ui_XY);
+  ui_layout_push(c);
+  ui_layout_resize(c, UiAlign_BottomLeft, ui_vector(cellSize, cellSize), UiBase_Absolute, Ui_XY);
+  ui_style_push(c);
+  for (u32 y = 0; y != s->height; ++y) {
+    for (u32 x = 0; x != s->width; ++x) {
+      const f32 v    = sim_velocity_divergence(s, (SimCoord){x, y});
+      const f32 frac = math_clamp_f32(math_abs(v) / scale, 0.0f, 1.0f);
 
-  demo_draw_numbox_f32(ctx, string_lit("Density"), &ctx->demo->density);
-  ui_layout_next(ctx->winCanvas, Ui_Up, spacing.y);
-  demo_draw_numbox_f32(ctx, string_lit("Velocity diff"), &ctx->demo->velDiffusion);
-  ui_layout_next(ctx->winCanvas, Ui_Up, spacing.y);
-  demo_draw_numbox_f32(ctx, string_lit("Smoke diff"), &ctx->demo->smokeDiffusion);
-  ui_layout_next(ctx->winCanvas, Ui_Up, spacing.y);
-  demo_draw_numbox_f32(ctx, string_lit("Smoke decay"), &ctx->demo->smokeDecay);
-  ui_layout_next(ctx->winCanvas, Ui_Up, spacing.y);
-  demo_draw_numbox_u32(ctx, string_lit("Solver itrs"), &ctx->demo->solverIterations);
+      ui_style_color(c, ui_color_lerp(ui_color_green, ui_color_red, frac));
+      ui_layout_set_pos(
+          c, UiBase_Canvas, demo_cell_pos(cellSize, cellOrigin, (SimCoord){x, y}), UiBase_Absolute);
+
+      ui_canvas_draw_glyph(c, UiShape_Square, 5, UiFlags_None);
+    }
+  }
+  ui_style_pop(c);
+  ui_layout_pop(c);
+}
+
+static void demo_draw_velocity_color(
+    UiCanvasComp*   c,
+    const SimState* s,
+    const f32       cellSize,
+    const UiVector  cellOrigin,
+    const f32       velocityScale) {
+
+  ui_layout_push(c);
+  ui_style_push(c);
+  ui_layout_resize(c, UiAlign_BottomLeft, ui_vector(cellSize, cellSize), UiBase_Absolute, Ui_XY);
+  for (u32 y = 0; y != s->height; ++y) {
+    for (u32 x = 0; x != s->width; ++x) {
+      const f32 vX = sim_grid_sample(&s->velocitiesX, (SimCoordFrac){x + 0.5f, y + 0.5f}, 0.0f);
+      const f32 vY = sim_grid_sample(&s->velocitiesY, (SimCoordFrac){x + 0.5f, y + 0.5f}, 0.0f);
+
+      const f32 vXNorm = math_clamp_f32(math_abs(vX) / velocityScale, 0.0f, 1.0f);
+      const f32 vYNorm = math_clamp_f32(math_abs(vY) / velocityScale, 0.0f, 1.0f);
+
+      const UiColor color = {.r = (u8)(vXNorm * 255.0f), .g = (u8)(vYNorm * 255.0f), 0, 255};
+      ui_style_color(c, color);
+      ui_layout_set_pos(
+          c, UiBase_Canvas, demo_cell_pos(cellSize, cellOrigin, (SimCoord){x, y}), UiBase_Absolute);
+
+      ui_canvas_draw_glyph(c, UiShape_Square, 5, UiFlags_None);
+    }
+  }
+  ui_style_pop(c);
+  ui_layout_pop(c);
+}
+
+static void demo_draw_input(
+    UiCanvasComp* c, const f32 cellSize, const UiVector cellOrigin, const SimCoord coord) {
+
+  ui_layout_push(c);
+  ui_layout_resize(c, UiAlign_BottomLeft, ui_vector(cellSize, cellSize), UiBase_Absolute, Ui_XY);
+  ui_layout_set_pos(c, UiBase_Canvas, demo_cell_pos(cellSize, cellOrigin, coord), UiBase_Absolute);
+
+  ui_style_push(c);
+  ui_style_outline(c, 4);
+  ui_style_color(c, ui_color_clear);
+
+  ui_canvas_draw_glyph(c, UiShape_Square, 10, UiFlags_None);
+
+  ui_style_pop(c);
+  ui_layout_pop(c);
+}
+
+static void demo_draw_solid(
+    UiCanvasComp*   c,
+    const SimState* s,
+    const f32       cellSize,
+    const UiVector  cellOrigin,
+    const UiColor   color) {
+
+  ui_layout_push(c);
+  ui_layout_resize(c, UiAlign_BottomLeft, ui_vector(cellSize, cellSize), UiBase_Absolute, Ui_XY);
+  ui_style_push(c);
+  ui_style_color(c, color);
+  ui_style_outline(c, 2);
+  for (u32 y = 0; y != s->height; ++y) {
+    for (u32 x = 0; x != s->width; ++x) {
+      if (sim_solid(s, (SimCoord){x, y})) {
+        const UiVector pos = demo_cell_pos(cellSize, cellOrigin, (SimCoord){x, y});
+        ui_layout_set_pos(c, UiBase_Canvas, pos, UiBase_Absolute);
+        ui_canvas_draw_glyph(c, UiShape_Circle, 4, UiFlags_None);
+      }
+    }
+  }
+  ui_style_pop(c);
+  ui_layout_pop(c);
+}
+
+static void demo_draw_emitters(
+    UiCanvasComp* c, const SimState* s, const f32 cellSize, const UiVector cellOrigin) {
+
+  ui_layout_push(c);
+  ui_layout_resize(c, UiAlign_BottomLeft, ui_vector(cellSize, cellSize), UiBase_Absolute, Ui_XY);
+
+  ui_style_push(c);
+  ui_style_outline(c, 3);
+
+  for (u32 i = 0; i != s->emitterCount; ++i) {
+    const SimEmitter* emitter = &s->emitters[i];
+    const UiVector    pos     = {
+        cellOrigin.x + emitter->position.x * cellSize,
+        cellOrigin.y + emitter->position.y * cellSize,
+    };
+    ui_layout_set_pos(c, UiBase_Canvas, pos, UiBase_Absolute);
+    ui_canvas_draw_glyph_rotated(
+        c, UiShape_ExpandLess, 0, -emitter->angle + math_pi_f32 * 0.5f, UiFlags_None);
+  }
+
+  ui_style_pop(c);
+  ui_layout_pop(c);
+}
+
+static void demo_draw_label(
+    UiCanvasComp*   c,
+    const SimState* s,
+    const f32       cellSize,
+    const UiVector  cellOrigin,
+    const DemoLabel label) {
+
+  if (label == DemoLabel_None) {
+    return;
+  }
+
+  u8        textBuffer[32];
+  DynString textStr = dynstring_create_over(mem_var(textBuffer));
+
+  const FormatOptsFloat floatOpts = format_opts_float(
+          .minDecDigits = 2, .maxDecDigits = 2, .expThresholdPos = f64_max, .expThresholdNeg = 0);
+
+  ui_layout_push(c);
+  ui_layout_resize(c, UiAlign_BottomLeft, ui_vector(cellSize, cellSize), UiBase_Absolute, Ui_XY);
+  ui_style_push(c);
+  ui_style_variation(c, UiVariation_Monospace);
+  for (u32 y = 0; y != s->height; ++y) {
+    for (u32 x = 0; x != s->width; ++x) {
+      const SimCoord coord = {x, y};
+      ui_layout_set_pos(
+          c, UiBase_Canvas, demo_cell_pos(cellSize, cellOrigin, coord), UiBase_Absolute);
+
+      dynstring_clear(&textStr);
+      switch (label) {
+      case DemoLabel_Smoke:
+        format_write_f64(&textStr, sim_smoke(s, coord), &floatOpts);
+        break;
+      case DemoLabel_Pressure:
+        format_write_f64(&textStr, sim_pressure(s, coord), &floatOpts);
+        break;
+      case DemoLabel_Speed:
+        format_write_f64(&textStr, sim_speed(s, coord), &floatOpts);
+        break;
+      case DemoLabel_Angle:
+        format_write_f64(&textStr, sim_angle(s, coord), &floatOpts);
+        break;
+      case DemoLabel_Divergence:
+        format_write_f64(&textStr, sim_velocity_divergence(s, coord), &floatOpts);
+        break;
+      case DemoLabel_None:
+      case DemoLabel_Count:
+        UNREACHABLE;
+      }
+      ui_canvas_draw_text(c, dynstring_view(&textStr), 8, UiAlign_MiddleCenter, UiFlags_None);
+    }
+  }
+  ui_style_pop(c);
+  ui_layout_pop(c);
+}
+
+static void demo_draw(
+    UiCanvasComp*      c,
+    DemoComp*          d,
+    const f32          cellSize,
+    const UiVector     cellOrigin,
+    const SimCoordFrac inputPos) {
+  switch (d->layer) {
+  case DemoLayer_SmokeInterp:
+    demo_draw_grid_sampled(
+        c, &d->sim.smoke, cellSize, cellOrigin, 0.0f, 0.1f, ui_color_black, ui_color_white, 4);
+    break;
+  case DemoLayer_Smoke:
+    demo_draw_grid(
+        c, &d->sim.smoke, cellSize, cellOrigin, 0.0f, 0.1f, ui_color_black, ui_color_white);
+    break;
+  case DemoLayer_Pressure:
+    demo_draw_grid(
+        c, &d->sim.pressure, cellSize, cellOrigin, -1.0f, 1.0f, ui_color_blue, ui_color_green);
+    break;
+  case DemoLayer_Velocity:
+    demo_draw_velocity_color(c, &d->sim, cellSize, cellOrigin, 25.0f);
+    break;
+  case DemoLayer_Divergence:
+    demo_draw_velocity_divergence(c, &d->sim, cellSize, cellOrigin, 0.01f);
+    break;
+  case DemoLayer_Count:
+    UNREACHABLE
+  }
+  const SimCoord inputPosWhole = sim_coord_round_down(inputPos);
+  if (d->interact && ui_canvas_status(c) == UiStatus_Idle &&
+      sim_coord_valid(inputPosWhole, d->sim.width, d->sim.height)) {
+    demo_draw_input(c, cellSize, cellOrigin, inputPosWhole);
+  }
+  if (d->overlay & DemoOverlay_Solid) {
+    demo_draw_solid(c, &d->sim, cellSize, cellOrigin, ui_color_purple);
+  }
+  if (d->overlay & DemoOverlay_Emitter) {
+    demo_draw_emitters(c, &d->sim, cellSize, cellOrigin);
+  }
+  if (d->overlay & DemoOverlay_Velo) {
+    demo_draw_velocity_edge(c, &d->sim, cellSize, cellOrigin, 0.05f);
+  }
+  if (d->overlay & DemoOverlay_VeloCenter) {
+    demo_draw_velocity_center(c, &d->sim, cellSize, cellOrigin, 0.05f);
+  }
+  demo_draw_label(c, &d->sim, cellSize, cellOrigin, d->label);
+}
+
+static const UiColor  g_demoMenuBg        = {0, 0, 0, 210};
+static const UiVector g_demoMenuSize      = {280, 35};
+static const UiVector g_demoMenuSpacing   = {8, 8};
+static const UiVector g_demoMenuInset     = {-30, -15};
+static const UiVector g_demoMenuValueSize = {0.55f, 1.0f};
+
+static void demo_menu_frame(UiCanvasComp* c) {
+  ui_style_push(c);
+  ui_style_outline(c, 5);
+  ui_style_color(c, g_demoMenuBg);
+  ui_canvas_draw_glyph(c, UiShape_Circle, 10, UiFlags_None);
+  ui_style_pop(c);
+}
+
+static void demo_menu_label(UiCanvasComp* c, const String label) {
+  demo_menu_frame(c);
+  ui_layout_push(c);
+  ui_layout_grow(c, UiAlign_MiddleCenter, g_demoMenuInset, UiBase_Absolute, Ui_XY);
+  ui_label(c, label);
+  ui_layout_pop(c);
+}
+
+static void demo_menu_select(
+    UiCanvasComp* c, const String label, i32* value, const String* options, const u32 optionCount) {
+  demo_menu_frame(c);
+  ui_layout_push(c);
+  ui_layout_grow(c, UiAlign_MiddleCenter, g_demoMenuInset, UiBase_Absolute, Ui_XY);
+  ui_label(c, label);
+  ui_layout_inner(c, UiBase_Current, UiAlign_MiddleRight, g_demoMenuValueSize, UiBase_Current);
+  ui_select(c, value, options, optionCount);
+  ui_layout_pop(c);
+}
+
+static void demo_menu_select_bits(
+    UiCanvasComp* c,
+    const String  label,
+    const BitSet  value,
+    const String* options,
+    const u32     optionCount) {
+  demo_menu_frame(c);
+  ui_layout_push(c);
+  ui_layout_grow(c, UiAlign_MiddleCenter, g_demoMenuInset, UiBase_Absolute, Ui_XY);
+  ui_label(c, label);
+  ui_layout_inner(c, UiBase_Current, UiAlign_MiddleRight, g_demoMenuValueSize, UiBase_Current);
+  ui_select_bits(c, value, options, optionCount);
+  ui_layout_pop(c);
+}
+
+static void demo_menu_numbox_f32(UiCanvasComp* c, const String label, f32* value) {
+  demo_menu_frame(c);
+  ui_layout_push(c);
+  ui_layout_grow(c, UiAlign_MiddleCenter, g_demoMenuInset, UiBase_Absolute, Ui_XY);
+  ui_label(c, label);
+  ui_layout_inner(c, UiBase_Current, UiAlign_MiddleRight, g_demoMenuValueSize, UiBase_Current);
+  f64 editVal = *value;
+  if (ui_numbox(c, &editVal)) {
+    *value = (f32)editVal;
+  }
+  ui_layout_pop(c);
+}
+
+static void demo_menu_numbox_u32(UiCanvasComp* c, const String label, u32* value) {
+  demo_menu_frame(c);
+  ui_layout_push(c);
+  ui_layout_grow(c, UiAlign_MiddleCenter, g_demoMenuInset, UiBase_Absolute, Ui_XY);
+  ui_label(c, label);
+  ui_layout_inner(c, UiBase_Current, UiAlign_MiddleRight, g_demoMenuValueSize, UiBase_Current);
+  f64 editVal = *value;
+  if (ui_numbox(c, &editVal, .step = 1.0)) {
+    *value = (u32)editVal;
+  }
+  ui_layout_pop(c);
+}
+
+typedef enum {
+  DemoMenuAction_None,
+  DemoMenuAction_FullscreenToggle,
+  DemoMenuAction_Quit,
+} DemoMenuAction;
+
+static DemoMenuAction demo_menu(UiCanvasComp* c, DemoComp* d) {
+  DemoMenuAction action = 0;
+
+  ui_layout_inner(c, UiBase_Canvas, UiAlign_BottomLeft, g_demoMenuSize, UiBase_Absolute);
+  ui_layout_move(c, g_demoMenuSpacing, UiBase_Absolute, Ui_XY);
+
+  if (ui_button(c, .label = string_lit("Quit"))) {
+    action = DemoMenuAction_Quit;
+  }
+  ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
+  if (ui_button(c, .label = string_lit("Fullscreen"))) {
+    action = DemoMenuAction_FullscreenToggle;
+  }
+  ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
+  if (ui_button(c, .label = string_lit("Reset"))) {
+    sim_clear(&d->sim);
+  }
+  ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
+  if (ui_button(c, .label = string_lit("Randomize Velocity"))) {
+    sim_velocity_randomize(&d->sim);
+  }
+  ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
+  if (ui_button(c, .label = string_lit("Solid Clear"))) {
+    sim_solid_clear(&d->sim);
+  }
+  ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
+  if (ui_button(c, .label = string_lit("Solid Border"))) {
+    sim_solid_set_border(&d->sim);
+  }
+  ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
+  demo_menu_select(c, string_lit("Label"), (i32*)&d->label, g_demoLabelNames, DemoLabel_Count);
+  ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
+  demo_menu_select_bits(
+      c, string_lit("Overlay"), bitset_from_var(d->overlay), g_demoOverlayNames, DemoOverlay_Count);
+  ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
+  demo_menu_select(c, string_lit("Layer"), (i32*)&d->layer, g_demoLayerNames, DemoLayer_Count);
+  ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
+  demo_menu_select(
+      c, string_lit("Interact"), (i32*)&d->interact, g_demoInteractNames, DemoInteract_Count);
+  ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
+  demo_menu_numbox_f32(c, string_lit("Density"), &d->sim.density);
+  ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
+  demo_menu_numbox_f32(c, string_lit("Pres Decay"), &d->sim.pressureDecay);
+  ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
+  demo_menu_numbox_f32(c, string_lit("Velo Diff"), &d->sim.velocityDiffusion);
+  ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
+  demo_menu_numbox_f32(c, string_lit("Smoke Diff"), &d->sim.smokeDiffusion);
+  ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
+  demo_menu_numbox_f32(c, string_lit("Smoke Decay"), &d->sim.smokeDecay);
+  ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
+  demo_menu_numbox_u32(c, string_lit("Solve Itrs"), &d->sim.solverIterations);
+  ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
+  demo_menu_label(
+      c, fmt_write_scratch("Divergence: {}", fmt_float(sim_velocity_divergence_sum(&d->sim))));
+  ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
+  demo_menu_label(c, fmt_write_scratch("Smoke: {}", fmt_float(sim_smoke_sum(&d->sim))));
+
+  return action;
+}
+
+static void demo_fullscreen_toggle(GapWindowComp* w) {
+  if (gap_window_mode(w) == GapWindowMode_Fullscreen) {
+    log_i("Enter windowed mode");
+    const GapVector size = gap_window_param(w, GapParam_WindowSizePreFullscreen);
+    gap_window_resize(w, size, GapWindowMode_Windowed);
+    gap_window_flags_unset(w, GapWindowFlags_CursorConfine);
+  } else {
+    log_i("Enter fullscreen mode");
+    gap_window_resize(w, gap_vector(0, 0), GapWindowMode_Fullscreen);
+    gap_window_flags_set(w, GapWindowFlags_CursorConfine);
+  }
 }
 
 ecs_view_define(FrameUpdateView) { ecs_access_write(RendSettingsGlobalComp); }
@@ -1048,12 +1458,8 @@ ecs_view_define(ErrorView) {
   ecs_access_maybe_read(RendErrorComp);
 }
 
-ecs_view_define(UpdateGlobalView) { ecs_access_write(DemoComp); }
-
-ecs_view_define(WindowView) {
-  ecs_access_write(DemoWindowComp);
-  ecs_access_write(GapWindowComp);
-}
+ecs_view_define(UpdateView) { ecs_access_write(DemoComp); }
+ecs_view_define(WindowView) { ecs_access_write(GapWindowComp); }
 
 ecs_view_define(UiCanvasView) {
   ecs_view_flags(EcsViewFlags_Exclusive); // Only access the canvas's we create.
@@ -1061,93 +1467,108 @@ ecs_view_define(UiCanvasView) {
 }
 
 ecs_system_define(DemoUpdateSys) {
-  EcsView*     globalView = ecs_world_view_t(world, UpdateGlobalView);
+  EcsView*     globalView = ecs_world_view_t(world, UpdateView);
   EcsIterator* globalItr  = ecs_view_maybe_at(globalView, ecs_world_global(world));
   if (!globalItr) {
     return;
   }
-
-  DemoUpdateContext ctx = {
-      .world = world,
-      .demo  = ecs_view_write_t(globalItr, DemoComp),
-  };
+  DemoComp* demo = ecs_view_write_t(globalItr, DemoComp);
 
   const TimeSteady timeNew   = time_steady_clock();
   TimeDuration     timeDelta = 0;
-  if (ctx.demo->lastTime) {
-    timeDelta = time_steady_duration(ctx.demo->lastTime, timeNew);
+  if (demo->lastTime) {
+    timeDelta = time_steady_duration(demo->lastTime, timeNew);
     timeDelta = math_min(timeDelta, time_second); // Avoid huge delta's when process was paused.
   }
-  ctx.demo->lastTime = timeNew;
-  ctx.dt             = sim_time_to_seconds(timeDelta);
+  demo->lastTime = timeNew;
+
+  sim_update(&demo->sim, demo_time_to_seconds(timeDelta));
 
   EcsIterator* canvasItr = ecs_view_itr(ecs_world_view_t(world, UiCanvasView));
-  EcsIterator* winItr    = ecs_view_maybe_at(ecs_world_view_t(world, WindowView), ctx.demo->window);
+  EcsIterator* winItr    = ecs_view_maybe_at(ecs_world_view_t(world, WindowView), demo->window);
+
+  demo->sim.push  = false;
+  demo->sim.pull  = false;
+  demo->sim.guide = false;
 
   if (winItr) {
-    ctx.winEntity = ecs_view_entity(winItr);
-    ctx.winDemo   = ecs_view_write_t(winItr, DemoWindowComp);
-    ctx.winComp   = ecs_view_write_t(winItr, GapWindowComp);
+    GapWindowComp* winComp = ecs_view_write_t(winItr, GapWindowComp);
 
-    if (gap_window_key_down(ctx.winComp, GapKey_Alt) &&
-        gap_window_key_pressed(ctx.winComp, GapKey_F4)) {
-      gap_window_close(ctx.winComp);
+    if (gap_window_key_down(winComp, GapKey_Alt) && gap_window_key_pressed(winComp, GapKey_F4)) {
+      gap_window_close(winComp);
     }
-
-    if (ecs_view_maybe_jump(canvasItr, ctx.winDemo->uiCanvas)) {
-      ctx.winCanvas = ecs_view_write_t(canvasItr, UiCanvasComp);
-      ui_canvas_reset(ctx.winCanvas);
+    if (gap_window_key_down(winComp, GapKey_Alt) &&
+        gap_window_key_pressed(winComp, GapKey_Return)) {
+      demo_fullscreen_toggle(winComp);
     }
-
-    const bool textEditor = ctx.winCanvas && ui_canvas_text_editor_active_any(ctx.winCanvas);
-    if (!textEditor && gap_window_key_pressed(ctx.winComp, GapKey_Alpha1)) {
-      ctx.demo->solve ^= true;
+    if (gap_window_key_pressed(winComp, GapKey_Tab)) {
+      demo->hideMenu ^= 1;
     }
-    if (!textEditor && gap_window_key_pressed(ctx.winComp, GapKey_Alpha2)) {
-      ctx.demo->updateVelocities ^= true;
+    if (gap_window_key_pressed(winComp, GapKey_R)) {
+      sim_clear(&demo->sim);
     }
-    if (!textEditor && gap_window_key_pressed(ctx.winComp, GapKey_Alpha3)) {
-      sim_velocity_randomize(&ctx);
+    for (DemoInteract interact = 0; interact != DemoInteract_Count; ++interact) {
+      if (gap_window_key_pressed(winComp, GapKey_Alpha1 + interact)) {
+        demo->interact = interact;
+      }
     }
-    if (!textEditor && gap_window_key_pressed(ctx.winComp, GapKey_Alpha4)) {
-      sim_velocity_clear(&ctx);
+    for (DemoLayer layer = 0; layer != DemoLayer_Count; ++layer) {
+      if (gap_window_key_pressed(winComp, GapKey_F1 + layer)) {
+        demo->layer = layer;
+      }
     }
-    if (!textEditor && gap_window_key_pressed(ctx.winComp, GapKey_Alpha5)) {
-      sim_pressure_clear(&ctx);
-    }
-    if (!textEditor && gap_window_key_pressed(ctx.winComp, GapKey_Alpha6)) {
-      sim_solid_set_border(&ctx);
+    for (u32 overlayBit = 0; overlayBit != DemoOverlay_Count; ++overlayBit) {
+      if (gap_window_key_pressed(winComp, GapKey_F1 + DemoLayer_Count + overlayBit)) {
+        demo->overlay ^= 1 << overlayBit;
+      }
     }
 
-    if (ctx.dt > f32_epsilon) {
-      sim_update(&ctx);
+    if (ecs_view_maybe_jump(canvasItr, demo->uiCanvas)) {
+      UiCanvasComp* uiCanvas = ecs_view_write_t(canvasItr, UiCanvasComp);
+      ui_canvas_reset(uiCanvas);
+      const f32 cellSize = demo_cell_size(uiCanvas, &demo->sim);
+      if (cellSize > f32_epsilon) {
+        const UiVector     cellOrigin = demo_cell_origin(uiCanvas, &demo->sim, cellSize);
+        const SimCoordFrac inputPos   = demo_input(uiCanvas, cellSize, cellOrigin);
+        if (ui_canvas_status(uiCanvas) == UiStatus_Idle) {
+          demo_interact(demo, winComp, inputPos);
+        }
+        demo_draw(uiCanvas, demo, cellSize, cellOrigin, inputPos);
+      }
+      ui_canvas_id_block_next(uiCanvas);
+      if (!demo->hideMenu) {
+        switch (demo_menu(uiCanvas, demo)) {
+        case DemoMenuAction_None:
+          break;
+        case DemoMenuAction_FullscreenToggle:
+          demo_fullscreen_toggle(winComp);
+          break;
+        case DemoMenuAction_Quit:
+          gap_window_close(winComp);
+          break;
+        }
+      }
     }
-    sim_draw(&ctx);
-    demo_draw_menu(&ctx);
   }
 }
 
 ecs_module_init(demo_module) {
   ecs_register_comp(DemoComp, .destructor = demo_destroy);
-  ecs_register_comp(DemoWindowComp);
 
   ecs_register_view(FrameUpdateView);
   ecs_register_view(ErrorView);
-  ecs_register_view(UpdateGlobalView);
+  ecs_register_view(UpdateView);
   ecs_register_view(WindowView);
   ecs_register_view(UiCanvasView);
 
   ecs_register_system(
-      DemoUpdateSys,
-      ecs_view_id(UpdateGlobalView),
-      ecs_view_id(WindowView),
-      ecs_view_id(UiCanvasView));
+      DemoUpdateSys, ecs_view_id(UpdateView), ecs_view_id(WindowView), ecs_view_id(UiCanvasView));
 }
 
 static CliId g_optAssets, g_optWidth, g_optHeight;
 
 AppType app_ecs_configure(CliApp* app) {
-  cli_app_register_desc(app, string_lit("Smoke Demo"));
+  cli_app_register_desc(app, string_lit("3D Smoke Demo"));
 
   g_optAssets = cli_register_flag(app, 'a', string_lit("assets"), CliOptionFlags_Value);
   cli_register_desc(app, g_optAssets, string_lit("Path to asset directory / pack file."));
@@ -1223,12 +1644,9 @@ bool app_ecs_init(EcsWorld* world, const CliInvocation* invoc) {
   ui_settings_global_init(world);
 
   const u16 windowWidth  = (u16)cli_read_u64(invoc, g_optWidth, 1600);
-  const u16 windowHeight = (u16)cli_read_u64(invoc, g_optHeight, 1600);
+  const u16 windowHeight = (u16)cli_read_u64(invoc, g_optHeight, 1200);
 
-  DemoComp* demo = demo_create(world);
-
-  demo->window = demo_window_create(world, windowWidth, windowHeight);
-  rend_settings_window_init(world, demo->window)->flags |= RendFlags_2D;
+  demo_create(world, windowWidth, windowHeight);
 
   return true; // Initialization succeeded.
 }
