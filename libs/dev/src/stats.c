@@ -256,7 +256,7 @@ static void dev_avg_f32(f32* value, const f32 new) {
 }
 
 static f32 dev_frame_frac(const TimeDuration whole, const TimeDuration part) {
-  return math_clamp_f32(part / (f32)whole, 0, 1);
+  return whole ? math_clamp_f32(part / (f32)whole, 0.0f, 1.0f) : 0.0f;
 }
 
 static void stats_draw_bg(UiCanvasComp* c, const DevBgFlags flags) {
