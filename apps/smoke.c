@@ -1497,6 +1497,10 @@ ecs_system_define(DemoUpdateSys) {
     if (gap_window_key_down(winComp, GapKey_Alt) && gap_window_key_pressed(winComp, GapKey_F4)) {
       gap_window_close(winComp);
     }
+    if (gap_window_key_down(winComp, GapKey_Alt) &&
+        gap_window_key_pressed(winComp, GapKey_Return)) {
+      demo_fullscreen_toggle(winComp);
+    }
     if (gap_window_key_pressed(winComp, GapKey_Tab)) {
       demo->hideMenu ^= 1;
     }
