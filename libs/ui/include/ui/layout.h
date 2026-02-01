@@ -35,4 +35,5 @@ void ui_layout_resize_to(UiCanvasComp*, UiBase, UiAlign, UiAxis);
  */
 void ui_layout_set(UiCanvasComp*, UiRect, UiBase);
 void ui_layout_set_pos(UiCanvasComp*, UiBase parent, UiVector pos, UiBase units);
+void ui_layout_set_center(UiCanvasComp*, UiBase parent, UiVector pos, UiBase units);
 void ui_layout_inner(UiCanvasComp*, UiBase parent, UiAlign, UiVector size, UiBase units);

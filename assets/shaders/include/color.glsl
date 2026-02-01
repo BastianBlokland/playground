@@ -37,6 +37,14 @@ f32v4 color_from_u32(const u32 val) {
 }
 
 /**
+ * Srgb to linear curve approximation.
+ * Implementation based on: http://chilliant.blogspot.com/2012/08/srgb-approximations-for-hlsl.html
+ */
+f32v3 color_from_srgb(const f32v3 srgb) {
+  return pow(srgb, f32v3(2.233333333));
+}
+
+/**
  * Create a color from 'Hue', 'Saturation', 'Value' components.
  * Implementation based on: http://lolengine.net/blog/2013/07/27/rgb-to-hsv-in-glsl
  */

@@ -3,6 +3,7 @@
 
 /**
  * UI Color, 8 bits per channel.
+ * Srgb encoded.
  */
 typedef union uUiColor {
   struct {
@@ -15,6 +16,7 @@ ASSERT(sizeof(UiColor) == 4, "UiColor has to be 32 bits");
 
 /**
  * Construct a new color.
+ * NOTE: Values are expected to be srgb encoded.
  */
 #define ui_color(_R_, _G_, _B_, _A_) ((UiColor){(_R_), (_G_), (_B_), (_A_)})
 
