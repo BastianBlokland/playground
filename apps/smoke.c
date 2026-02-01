@@ -844,25 +844,44 @@ static SimCoordFrac demo_input(UiCanvasComp* c, const f32 cellSize, const UiVect
 }
 
 static void demo_interact(DemoComp* d, const GapWindowComp* w, const SimCoordFrac inputPos) {
-  const bool click  = gap_window_key_pressed(w, GapKey_MouseLeft);
-  const f32  scroll = gap_window_param(w, GapParam_ScrollDelta).y;
   switch (d->interact) {
   case DemoInteract_None:
     break;
   case DemoInteract_Pull:
     d->sim.pull      = true;
     d->sim.pullCoord = inputPos;
+    if (gap_window_key_pressed(w, GapKey_Plus) || gap_window_key_pressed(w, GapKey_ArrowUp)) {
+      d->sim.pullForce = math_min(d->sim.pullForce * 2.0f, 1e4f);
+    }
+    if (gap_window_key_pressed(w, GapKey_Minus) || gap_window_key_pressed(w, GapKey_ArrowDown)) {
+      d->sim.pullForce = math_max(d->sim.pullForce / 2.0f, 1.0f);
+    }
     break;
   case DemoInteract_Push:
     d->sim.pushCoord = sim_coord_round_down(inputPos);
     d->sim.push      = sim_coord_valid(d->sim.pushCoord, d->sim.width, d->sim.height);
+    if (gap_window_key_pressed(w, GapKey_Plus) || gap_window_key_pressed(w, GapKey_ArrowUp)) {
+      d->sim.pushPressure = math_min(d->sim.pushPressure * 2.0f, 1e4f);
+    }
+    if (gap_window_key_pressed(w, GapKey_Minus) || gap_window_key_pressed(w, GapKey_ArrowDown)) {
+      d->sim.pushPressure = math_max(d->sim.pushPressure / 2.0f, 1.0f);
+    }
     break;
-  case DemoInteract_Guide:
+  case DemoInteract_Guide: {
+    const f32 scroll  = gap_window_param(w, GapParam_ScrollDelta).y;
     d->sim.guideCoord = sim_coord_round_down(inputPos);
     d->sim.guide      = sim_coord_valid(d->sim.guideCoord, d->sim.width, d->sim.height);
     d->sim.guideAngle = math_mod_f32(d->sim.guideAngle + scroll * 0.1f, math_pi_f32 * 2.0f);
+    if (gap_window_key_pressed(w, GapKey_Plus) || gap_window_key_pressed(w, GapKey_ArrowUp)) {
+      d->sim.guideForce = math_min(d->sim.guideForce * 2.0f, 1e4f);
+    }
+    if (gap_window_key_pressed(w, GapKey_Minus) || gap_window_key_pressed(w, GapKey_ArrowDown)) {
+      d->sim.guideForce = math_max(d->sim.guideForce / 2.0f, 1.0f);
+    }
     break;
+  }
   case DemoInteract_Solid: {
+    const bool     click = gap_window_key_pressed(w, GapKey_MouseLeft);
     const SimCoord coord = sim_coord_round_down(inputPos);
     if (sim_coord_valid(coord, d->sim.width, d->sim.height) && click) {
       sim_solid_flip(&d->sim, coord);
@@ -870,13 +889,15 @@ static void demo_interact(DemoComp* d, const GapWindowComp* w, const SimCoordFra
     break;
   }
   case DemoInteract_Emitter: {
+    const bool     click   = gap_window_key_pressed(w, GapKey_MouseLeft);
     const SimCoord coord   = sim_coord_round_down(inputPos);
     SimEmitter*    emitter = sim_emitter_get(&d->sim, coord);
     if (emitter) {
-      if (click) {
+      if (gap_window_key_pressed(w, GapKey_MouseLeft)) {
         sim_emitter_remove(&d->sim, emitter);
       } else {
-        emitter->angle = math_mod_f32(emitter->angle + scroll * 0.1f, math_pi_f32 * 2.0f);
+        const f32 scroll = gap_window_param(w, GapParam_ScrollDelta).y;
+        emitter->angle   = math_mod_f32(emitter->angle + scroll * 0.1f, math_pi_f32 * 2.0f);
       }
     } else if (sim_coord_valid(coord, d->sim.width, d->sim.height) && click) {
       sim_emitter_add_default(&d->sim, coord);
