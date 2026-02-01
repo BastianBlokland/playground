@@ -13,7 +13,7 @@
     }
   ],
   "samplers": [
-    { "texture": "external/tiling/clouds_2.tga", "wrap": "Repeat" }
+    { "texture": "textures/builtin/one.proctex", "wrap": "Repeat" }
   ],
   "vertexCount": 3,
   "blend": "Additive",
