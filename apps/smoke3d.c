@@ -708,6 +708,7 @@ static void sim_advect_smoke(SimState* s, const f32 dt) {
 
   sim_grid_copy(&s->smoke, &smokeNew);
 }
+
 static void sim_solve_pressure(SimState* s, const f32 dt) {
   if (s->density <= f32_epsilon) {
     return;
