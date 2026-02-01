@@ -1299,10 +1299,10 @@ static void demo_draw(
 }
 
 static const UiColor  g_demoMenuBg        = {0, 0, 0, 210};
-static const UiVector g_demoMenuSize      = {275, 40};
+static const UiVector g_demoMenuSize      = {280, 40};
 static const UiVector g_demoMenuSpacing   = {10, 10};
 static const UiVector g_demoMenuInset     = {-30, -15};
-static const UiVector g_demoMenuValueSize = {0.6f, 1.0f};
+static const UiVector g_demoMenuValueSize = {0.55f, 1.0f};
 
 static void demo_menu_frame(UiCanvasComp* c) {
   ui_style_push(c);
@@ -1343,6 +1343,32 @@ static void demo_menu_select_bits(
   ui_label(c, label);
   ui_layout_inner(c, UiBase_Current, UiAlign_MiddleRight, g_demoMenuValueSize, UiBase_Current);
   ui_select_bits(c, value, options, optionCount);
+  ui_layout_pop(c);
+}
+
+static void demo_menu_numbox_f32(UiCanvasComp* c, const String label, f32* value) {
+  demo_menu_frame(c);
+  ui_layout_push(c);
+  ui_layout_grow(c, UiAlign_MiddleCenter, g_demoMenuInset, UiBase_Absolute, Ui_XY);
+  ui_label(c, label);
+  ui_layout_inner(c, UiBase_Current, UiAlign_MiddleRight, g_demoMenuValueSize, UiBase_Current);
+  f64 editVal = *value;
+  if (ui_numbox(c, &editVal)) {
+    *value = (f32)editVal;
+  }
+  ui_layout_pop(c);
+}
+
+static void demo_menu_numbox_u32(UiCanvasComp* c, const String label, u32* value) {
+  demo_menu_frame(c);
+  ui_layout_push(c);
+  ui_layout_grow(c, UiAlign_MiddleCenter, g_demoMenuInset, UiBase_Absolute, Ui_XY);
+  ui_label(c, label);
+  ui_layout_inner(c, UiBase_Current, UiAlign_MiddleRight, g_demoMenuValueSize, UiBase_Current);
+  f64 editVal = *value;
+  if (ui_numbox(c, &editVal, .step = 1.0)) {
+    *value = (u32)editVal;
+  }
   ui_layout_pop(c);
 }
 
@@ -1391,6 +1417,18 @@ static DemoMenuAction demo_menu(UiCanvasComp* c, DemoComp* d) {
   ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
   demo_menu_select(
       c, string_lit("Interact"), (i32*)&d->interact, g_demoInteractNames, DemoInteract_Count);
+  ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
+  demo_menu_numbox_f32(c, string_lit("Density"), &d->sim.density);
+  ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
+  demo_menu_numbox_f32(c, string_lit("Pres Decay"), &d->sim.pressureDecay);
+  ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
+  demo_menu_numbox_f32(c, string_lit("Velo Diff"), &d->sim.velocityDiffusion);
+  ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
+  demo_menu_numbox_f32(c, string_lit("Smoke Diff"), &d->sim.smokeDiffusion);
+  ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
+  demo_menu_numbox_f32(c, string_lit("Smoke Decay"), &d->sim.smokeDecay);
+  ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
+  demo_menu_numbox_u32(c, string_lit("Solve Itrs"), &d->sim.solverIterations);
   ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
   demo_menu_label(
       c, fmt_write_scratch("Divergence: {}", fmt_float(sim_velocity_divergence_sum(&d->sim))));
