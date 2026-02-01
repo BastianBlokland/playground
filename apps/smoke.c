@@ -212,6 +212,7 @@ static SimState sim_state_create(const u32 width, const u32 height) {
       .pushPressure      = 100.0f,
       .pullForce         = 100.0f,
       .guideForce        = 500.0f,
+      .guideAngle        = math_pi_f32,
 
       .velocitiesX = sim_grid_create(g_allocHeap, width + 1, height),
       .velocitiesY = sim_grid_create(g_allocHeap, width, height + 1),
@@ -249,7 +250,7 @@ static bool sim_emitter_add_default(SimState* s, const SimCoord c) {
   return sim_emitter_add(
       s,
       (SimEmitter){
-          .angle       = math_pi_f32 * 0.25f,
+          .angle       = math_pi_f32 * 0.75f,
           .force       = 1000.0f,
           .position    = c,
           .smokeAmount = 5.0f,
@@ -798,10 +799,10 @@ static DemoComp* demo_create(EcsWorld* world, const u16 winWidth, const u16 winH
   const u32 simHeight = 30;
   demo->sim           = sim_state_create(simWidth, simHeight);
 
-  sim_emitter_add_default(&demo->sim, (SimCoord){2, 2});
+  sim_emitter_add_default(&demo->sim, (SimCoord){37, 2});
 
-  sim_solid_set(&demo->sim, (SimCoord){6, 6});
-  sim_solid_set(&demo->sim, (SimCoord){7, 5});
+  sim_solid_set(&demo->sim, (SimCoord){34, 4});
+  sim_solid_set(&demo->sim, (SimCoord){35, 5});
 
   return demo;
 }
