@@ -226,6 +226,7 @@ static SimState sim_state_create(const u32 width, const u32 height, const u32 de
   SimState s = {
       .width  = width,
       .height = height,
+      .depth  = depth,
 
       .solverIterations  = 128,
       .density           = 10.0f,
@@ -861,85 +862,6 @@ static void sim_clear(SimState* s) {
   sim_pressure_clear(s);
 }
 
-typedef enum {
-  DemoInteract_None,
-  DemoInteract_Pull,
-  DemoInteract_Push,
-  DemoInteract_Guide,
-  DemoInteract_Solid,
-  DemoInteract_Emitter,
-
-  DemoInteract_Count,
-} DemoInteract;
-
-static const String g_demoInteractNames[] = {
-    string_static("None"),
-    string_static("Pull"),
-    string_static("Push"),
-    string_static("Guide"),
-    string_static("Solid"),
-    string_static("Emitter"),
-};
-ASSERT(array_elems(g_demoInteractNames) == DemoInteract_Count, "Incorrect number of names");
-
-typedef enum {
-  DemoLayer_SmokeInterp,
-  DemoLayer_Smoke,
-  DemoLayer_Pressure,
-  DemoLayer_Velocity,
-  DemoLayer_Divergence,
-
-  DemoLayer_Count,
-} DemoLayer;
-
-static const String g_demoLayerNames[] = {
-    string_static("SmokeInterp"),
-    string_static("Smoke"),
-    string_static("Pressure"),
-    string_static("Velocity"),
-    string_static("Divergence"),
-};
-ASSERT(array_elems(g_demoLayerNames) == DemoLayer_Count, "Incorrect number of names");
-
-typedef enum {
-  DemoOverlay_Solid      = 1 << 0,
-  DemoOverlay_Emitter    = 1 << 1,
-  DemoOverlay_Velo       = 1 << 2,
-  DemoOverlay_VeloCenter = 1 << 3,
-
-  DemoOverlay_Count   = 4,
-  DemoOverlay_Default = DemoOverlay_Solid | DemoOverlay_Emitter,
-} DemoOverlay;
-
-static const String g_demoOverlayNames[] = {
-    string_static("Solid"),
-    string_static("Emitter"),
-    string_static("Velo"),
-    string_static("Velo Center"),
-};
-ASSERT(array_elems(g_demoOverlayNames) == DemoOverlay_Count, "Incorrect number of names");
-
-typedef enum {
-  DemoLabel_None,
-  DemoLabel_Smoke,
-  DemoLabel_Pressure,
-  DemoLabel_Speed,
-  DemoLabel_Angle,
-  DemoLabel_Divergence,
-
-  DemoLabel_Count,
-} DemoLabel;
-
-static const String g_demoLabelNames[] = {
-    string_static("None"),
-    string_static("Smoke"),
-    string_static("Pressure"),
-    string_static("Speed"),
-    string_static("Angle"),
-    string_static("Divergence"),
-};
-ASSERT(array_elems(g_demoLabelNames) == DemoLabel_Count, "Incorrect number of names");
-
 ecs_comp_define(DemoComp) {
   EcsEntityId window;
   EcsEntityId uiCanvas;
@@ -947,11 +869,7 @@ ecs_comp_define(DemoComp) {
 
   SimState sim;
 
-  bool         hideMenu;
-  DemoInteract interact;
-  DemoLayer    layer;
-  DemoOverlay  overlay;
-  DemoLabel    label;
+  bool hideMenu;
 };
 
 static EcsEntityId demo_create_window(EcsWorld* world, const u16 width, const u16 height) {
@@ -960,7 +878,7 @@ static EcsEntityId demo_create_window(EcsWorld* world, const u16 width, const u1
   const GapWindowMode  mode           = GapWindowMode_Windowed;
   const GapIcon        icon           = GapIcon_Main;
   const String         versionScratch = version_str_scratch(g_versionExecutable);
-  const String         titleScratch = fmt_write_scratch("Smoke Demo v{}", fmt_text(versionScratch));
+  const String titleScratch = fmt_write_scratch("Smoke3D Demo v{}", fmt_text(versionScratch));
   return gap_window_create(world, mode, flags, size, icon, titleScratch);
 }
 
@@ -971,18 +889,18 @@ static DemoComp* demo_create(EcsWorld* world, const u16 winWidth, const u16 winH
 
   demo->window   = demo_create_window(world, winWidth, winHeight);
   demo->uiCanvas = ui_canvas_create(world, demo->window, UiCanvasCreateFlags_ToBack);
-  demo->overlay  = DemoOverlay_Default;
 
   rend_settings_window_init(world, demo->window)->flags |= RendFlags_2D;
 
-  const u32 simWidth  = 40;
-  const u32 simHeight = 30;
-  demo->sim           = sim_state_create(simWidth, simHeight);
+  const u32 simWidth  = 25;
+  const u32 simHeight = 5;
+  const u32 simDepth  = 25;
+  demo->sim           = sim_state_create(simWidth, simHeight, simDepth);
 
-  sim_emitter_add_default(&demo->sim, (SimCoord){37, 2});
+  sim_emitter_add_default(&demo->sim, (SimCoord){22, 2, 2});
 
-  sim_solid_set(&demo->sim, (SimCoord){34, 4});
-  sim_solid_set(&demo->sim, (SimCoord){35, 5});
+  sim_solid_set(&demo->sim, (SimCoord){19, 2, 4});
+  sim_solid_set(&demo->sim, (SimCoord){20, 2, 5});
 
   return demo;
 }
@@ -995,487 +913,6 @@ static void demo_destroy(void* data) {
 static f32 demo_time_to_seconds(const TimeDuration dur) {
   static const f64 g_toSecMul = 1.0 / (f64)time_second;
   return (f32)((f64)dur * g_toSecMul);
-}
-
-static f32 demo_cell_size(UiCanvasComp* c, const SimState* s) {
-  const f32 border = 10;
-  const f32 xSize  = (ui_canvas_resolution(c).width - border * 2) / (f32)s->width;
-  const f32 ySize  = (ui_canvas_resolution(c).height - border * 2) / (f32)s->height;
-  return math_min(xSize, ySize);
-}
-
-static UiVector demo_cell_origin(UiCanvasComp* c, const SimState* s, const f32 cellSize) {
-  return (UiVector){
-      ui_canvas_resolution(c).width * 0.5f - s->width * cellSize * 0.5f,
-      ui_canvas_resolution(c).height * 0.5f - s->height * cellSize * 0.5f,
-  };
-}
-
-static UiVector demo_cell_pos(const f32 cellSize, const UiVector cellOrigin, const SimCoord c) {
-  return ui_vector(cellOrigin.x + c.x * cellSize, cellOrigin.y + c.y * cellSize);
-}
-
-static SimCoordFrac demo_input(UiCanvasComp* c, const f32 cellSize, const UiVector cellOrigin) {
-  diag_assert(cellSize > f32_epsilon);
-  const UiVector inputPos = ui_canvas_input_pos(c);
-  return (SimCoordFrac){
-      (inputPos.x - cellOrigin.x) / cellSize,
-      (inputPos.y - cellOrigin.y) / cellSize,
-  };
-}
-
-static void demo_interact(DemoComp* d, const GapWindowComp* w, const SimCoordFrac inputPos) {
-  switch (d->interact) {
-  case DemoInteract_None:
-    break;
-  case DemoInteract_Pull:
-    d->sim.pull      = true;
-    d->sim.pullCoord = inputPos;
-    if (gap_window_key_pressed(w, GapKey_Plus) || gap_window_key_pressed(w, GapKey_ArrowUp)) {
-      d->sim.pullForce = math_min(d->sim.pullForce * 2.0f, 1e4f);
-    }
-    if (gap_window_key_pressed(w, GapKey_Minus) || gap_window_key_pressed(w, GapKey_ArrowDown)) {
-      d->sim.pullForce = math_max(d->sim.pullForce / 2.0f, 1.0f);
-    }
-    break;
-  case DemoInteract_Push:
-    d->sim.pushCoord = sim_coord_round_down(inputPos);
-    d->sim.push      = sim_coord_valid(d->sim.pushCoord, d->sim.width, d->sim.height);
-    if (gap_window_key_pressed(w, GapKey_Plus) || gap_window_key_pressed(w, GapKey_ArrowUp)) {
-      d->sim.pushPressure = math_min(d->sim.pushPressure * 2.0f, 1e4f);
-    }
-    if (gap_window_key_pressed(w, GapKey_Minus) || gap_window_key_pressed(w, GapKey_ArrowDown)) {
-      d->sim.pushPressure = math_max(d->sim.pushPressure / 2.0f, 1.0f);
-    }
-    break;
-  case DemoInteract_Guide: {
-    const f32 scroll  = gap_window_param(w, GapParam_ScrollDelta).y;
-    d->sim.guideCoord = sim_coord_round_down(inputPos);
-    d->sim.guide      = sim_coord_valid(d->sim.guideCoord, d->sim.width, d->sim.height);
-    d->sim.guideAngle = math_mod_f32(d->sim.guideAngle + scroll * 0.1f, math_pi_f32 * 2.0f);
-    if (gap_window_key_pressed(w, GapKey_Plus) || gap_window_key_pressed(w, GapKey_ArrowUp)) {
-      d->sim.guideForce = math_min(d->sim.guideForce * 2.0f, 1e4f);
-    }
-    if (gap_window_key_pressed(w, GapKey_Minus) || gap_window_key_pressed(w, GapKey_ArrowDown)) {
-      d->sim.guideForce = math_max(d->sim.guideForce / 2.0f, 1.0f);
-    }
-    break;
-  }
-  case DemoInteract_Solid: {
-    const bool     click = gap_window_key_pressed(w, GapKey_MouseLeft);
-    const SimCoord coord = sim_coord_round_down(inputPos);
-    if (sim_coord_valid(coord, d->sim.width, d->sim.height) && click) {
-      sim_solid_flip(&d->sim, coord);
-    }
-    break;
-  }
-  case DemoInteract_Emitter: {
-    const bool     click   = gap_window_key_pressed(w, GapKey_MouseLeft);
-    const SimCoord coord   = sim_coord_round_down(inputPos);
-    SimEmitter*    emitter = sim_emitter_get(&d->sim, coord);
-    if (emitter) {
-      if (gap_window_key_pressed(w, GapKey_MouseLeft)) {
-        sim_emitter_remove(&d->sim, emitter);
-      } else {
-        const f32 scroll = gap_window_param(w, GapParam_ScrollDelta).y;
-        emitter->angle   = math_mod_f32(emitter->angle + scroll * 0.1f, math_pi_f32 * 2.0f);
-      }
-    } else if (sim_coord_valid(coord, d->sim.width, d->sim.height) && click) {
-      sim_emitter_add_default(&d->sim, coord);
-    }
-    break;
-  }
-  case DemoInteract_Count:
-    UNREACHABLE
-  }
-}
-
-static void demo_draw_grid(
-    UiCanvasComp*  c,
-    const SimGrid* g,
-    const f32      cellSize,
-    const UiVector cellOrigin,
-    const f32      minVal,
-    const f32      maxVal,
-    const UiColor  minColor,
-    const UiColor  maxColor) {
-
-  ui_layout_push(c);
-  ui_layout_resize(c, UiAlign_BottomLeft, ui_vector(cellSize, cellSize), UiBase_Absolute, Ui_XY);
-  ui_style_push(c);
-  for (u32 y = 0; y != g->height; ++y) {
-    for (u32 x = 0; x != g->width; ++x) {
-      const SimCoord coord = {x, y};
-      const f32      v     = sim_grid_get(g, coord);
-      const f32      frac  = math_clamp_f32(math_unlerp(minVal, maxVal, v), 0.0f, 1.0f);
-
-      ui_style_color(c, ui_color_lerp(minColor, maxColor, frac));
-      ui_layout_set_pos(
-          c, UiBase_Canvas, demo_cell_pos(cellSize, cellOrigin, coord), UiBase_Absolute);
-
-      ui_canvas_draw_glyph(c, UiShape_Square, 5, UiFlags_None);
-    }
-  }
-  ui_style_pop(c);
-  ui_layout_pop(c);
-}
-
-static void demo_draw_grid_sampled(
-    UiCanvasComp*  c,
-    const SimGrid* g,
-    const f32      cellSize,
-    const UiVector cellOrigin,
-    const f32      minVal,
-    const f32      maxVal,
-    const UiColor  minColor,
-    const UiColor  maxColor,
-    const u32      density) {
-
-  const u32 stepsX          = g->width * density;
-  const u32 stepsY          = g->height * density;
-  const f32 sampledCellSize = cellSize / density;
-
-  ui_layout_push(c);
-  ui_layout_resize(
-      c,
-      UiAlign_BottomLeft,
-      ui_vector(sampledCellSize + 1, sampledCellSize + 1),
-      UiBase_Absolute,
-      Ui_XY);
-  ui_style_push(c);
-  ui_style_outline(c, 0);
-  for (u32 y = 0; y != stepsY; ++y) {
-    const f32 fracY = ((f32)y / (f32)(stepsY - 1)) * (g->height - 1);
-    for (u32 x = 0; x != stepsX; ++x) {
-      const f32 fracX = ((f32)x / (f32)(stepsX - 1)) * (g->width - 1);
-      const f32 v     = sim_grid_sample(g, (SimCoordFrac){fracX, fracY}, 0.0f);
-      const f32 frac  = math_clamp_f32(math_unlerp(minVal, maxVal, v), 0.0f, 1.0f);
-
-      ui_style_color(c, ui_color_lerp(minColor, maxColor, frac));
-      ui_layout_set_pos(
-          c,
-          UiBase_Canvas,
-          demo_cell_pos(sampledCellSize, cellOrigin, (SimCoord){x, y}),
-          UiBase_Absolute);
-
-      ui_canvas_draw_glyph(c, UiShape_Square, 5, UiFlags_None);
-    }
-  }
-  ui_style_pop(c);
-  ui_layout_pop(c);
-}
-
-static void demo_draw_velocity_edge(
-    UiCanvasComp*   c,
-    const SimState* s,
-    const f32       cellSize,
-    const UiVector  cellOrigin,
-    const f32       velocityScale) {
-
-  ui_layout_push(c);
-  ui_style_push(c);
-
-  const f32 dotSize   = 6.0f;
-  const f32 lineWidth = 3.0f;
-
-  ui_layout_resize(c, UiAlign_BottomLeft, ui_vector(dotSize, dotSize), UiBase_Absolute, Ui_XY);
-
-  // Horizontal.
-  ui_style_color(c, ui_color_red);
-  for (u32 y = 0; y != s->velocitiesX.height; ++y) {
-    for (u32 x = 0; x != s->velocitiesX.width; ++x) {
-      const f32      val = sim_grid_get(&s->velocitiesX, (SimCoord){x, y});
-      const UiVector pA  = {cellOrigin.x + x * cellSize, cellOrigin.y + (y + 0.5f) * cellSize};
-      const UiVector pB  = {pA.x + val * cellSize * velocityScale, pA.y};
-
-      ui_line(c, pA, pB, .base = UiBase_Absolute, .width = lineWidth);
-
-      ui_layout_set_center(c, UiBase_Canvas, pA, UiBase_Absolute);
-      ui_canvas_draw_glyph(c, UiShape_Circle, 0, UiFlags_None);
-    }
-  }
-
-  // Vertical.
-  ui_style_color(c, ui_color_green);
-  for (u32 y = 0; y != s->velocitiesY.height; ++y) {
-    for (u32 x = 0; x != s->velocitiesY.width; ++x) {
-      const f32      val = sim_grid_get(&s->velocitiesY, (SimCoord){x, y});
-      const UiVector pA  = {cellOrigin.x + (x + 0.5f) * cellSize, cellOrigin.y + y * cellSize};
-      const UiVector pB  = {pA.x, pA.y + val * cellSize * velocityScale};
-
-      ui_line(c, pA, pB, .base = UiBase_Absolute, .width = lineWidth);
-
-      ui_layout_set_center(c, UiBase_Canvas, pA, UiBase_Absolute);
-      ui_canvas_draw_glyph(c, UiShape_Circle, 0, UiFlags_None);
-    }
-  }
-
-  ui_style_pop(c);
-  ui_layout_pop(c);
-}
-
-static void demo_draw_velocity_center(
-    UiCanvasComp*   c,
-    const SimState* s,
-    const f32       cellSize,
-    const UiVector  cellOrigin,
-    const f32       velocityScale) {
-
-  ui_layout_push(c);
-  ui_style_push(c);
-
-  const f32 dotSize   = 6.0f;
-  const f32 lineWidth = 3.0f;
-
-  ui_layout_resize(c, UiAlign_BottomLeft, ui_vector(dotSize, dotSize), UiBase_Absolute, Ui_XY);
-  ui_style_color(c, ui_color_green);
-  for (u32 y = 0; y != s->height; ++y) {
-    for (u32 x = 0; x != s->width; ++x) {
-      const f32 vX = sim_grid_sample(&s->velocitiesX, (SimCoordFrac){x + 0.5f, y + 0.5f}, 0.0f);
-      const f32 vY = sim_grid_sample(&s->velocitiesY, (SimCoordFrac){x + 0.5f, y + 0.5f}, 0.0f);
-
-      const UiVector pA = {
-          cellOrigin.x + (x + 0.5f) * cellSize,
-          cellOrigin.y + (y + 0.5f) * cellSize,
-      };
-      const UiVector pB = {
-          pA.x + vX * cellSize * velocityScale,
-          pA.y + vY * cellSize * velocityScale,
-      };
-
-      ui_line(c, pA, pB, .base = UiBase_Absolute, .width = lineWidth);
-
-      ui_layout_set_center(c, UiBase_Canvas, pA, UiBase_Absolute);
-      ui_canvas_draw_glyph(c, UiShape_Circle, 0, UiFlags_None);
-    }
-  }
-  ui_style_pop(c);
-  ui_layout_pop(c);
-}
-
-static void demo_draw_velocity_divergence(
-    UiCanvasComp*   c,
-    const SimState* s,
-    const f32       cellSize,
-    const UiVector  cellOrigin,
-    const f32       scale) {
-
-  ui_layout_push(c);
-  ui_layout_resize(c, UiAlign_BottomLeft, ui_vector(cellSize, cellSize), UiBase_Absolute, Ui_XY);
-  ui_style_push(c);
-  for (u32 y = 0; y != s->height; ++y) {
-    for (u32 x = 0; x != s->width; ++x) {
-      const f32 v    = sim_velocity_divergence(s, (SimCoord){x, y});
-      const f32 frac = math_clamp_f32(math_abs(v) / scale, 0.0f, 1.0f);
-
-      ui_style_color(c, ui_color_lerp(ui_color_green, ui_color_red, frac));
-      ui_layout_set_pos(
-          c, UiBase_Canvas, demo_cell_pos(cellSize, cellOrigin, (SimCoord){x, y}), UiBase_Absolute);
-
-      ui_canvas_draw_glyph(c, UiShape_Square, 5, UiFlags_None);
-    }
-  }
-  ui_style_pop(c);
-  ui_layout_pop(c);
-}
-
-static void demo_draw_velocity_color(
-    UiCanvasComp*   c,
-    const SimState* s,
-    const f32       cellSize,
-    const UiVector  cellOrigin,
-    const f32       velocityScale) {
-
-  ui_layout_push(c);
-  ui_style_push(c);
-  ui_layout_resize(c, UiAlign_BottomLeft, ui_vector(cellSize, cellSize), UiBase_Absolute, Ui_XY);
-  for (u32 y = 0; y != s->height; ++y) {
-    for (u32 x = 0; x != s->width; ++x) {
-      const f32 vX = sim_grid_sample(&s->velocitiesX, (SimCoordFrac){x + 0.5f, y + 0.5f}, 0.0f);
-      const f32 vY = sim_grid_sample(&s->velocitiesY, (SimCoordFrac){x + 0.5f, y + 0.5f}, 0.0f);
-
-      const f32 vXNorm = math_clamp_f32(math_abs(vX) / velocityScale, 0.0f, 1.0f);
-      const f32 vYNorm = math_clamp_f32(math_abs(vY) / velocityScale, 0.0f, 1.0f);
-
-      const UiColor color = {.r = (u8)(vXNorm * 255.0f), .g = (u8)(vYNorm * 255.0f), 0, 255};
-      ui_style_color(c, color);
-      ui_layout_set_pos(
-          c, UiBase_Canvas, demo_cell_pos(cellSize, cellOrigin, (SimCoord){x, y}), UiBase_Absolute);
-
-      ui_canvas_draw_glyph(c, UiShape_Square, 5, UiFlags_None);
-    }
-  }
-  ui_style_pop(c);
-  ui_layout_pop(c);
-}
-
-static void demo_draw_input(
-    UiCanvasComp* c, const f32 cellSize, const UiVector cellOrigin, const SimCoord coord) {
-
-  ui_layout_push(c);
-  ui_layout_resize(c, UiAlign_BottomLeft, ui_vector(cellSize, cellSize), UiBase_Absolute, Ui_XY);
-  ui_layout_set_pos(c, UiBase_Canvas, demo_cell_pos(cellSize, cellOrigin, coord), UiBase_Absolute);
-
-  ui_style_push(c);
-  ui_style_outline(c, 4);
-  ui_style_color(c, ui_color_clear);
-
-  ui_canvas_draw_glyph(c, UiShape_Square, 10, UiFlags_None);
-
-  ui_style_pop(c);
-  ui_layout_pop(c);
-}
-
-static void demo_draw_solid(
-    UiCanvasComp*   c,
-    const SimState* s,
-    const f32       cellSize,
-    const UiVector  cellOrigin,
-    const UiColor   color) {
-
-  ui_layout_push(c);
-  ui_layout_resize(c, UiAlign_BottomLeft, ui_vector(cellSize, cellSize), UiBase_Absolute, Ui_XY);
-  ui_style_push(c);
-  ui_style_color(c, color);
-  ui_style_outline(c, 2);
-  for (u32 y = 0; y != s->height; ++y) {
-    for (u32 x = 0; x != s->width; ++x) {
-      if (sim_solid(s, (SimCoord){x, y})) {
-        const UiVector pos = demo_cell_pos(cellSize, cellOrigin, (SimCoord){x, y});
-        ui_layout_set_pos(c, UiBase_Canvas, pos, UiBase_Absolute);
-        ui_canvas_draw_glyph(c, UiShape_Circle, 4, UiFlags_None);
-      }
-    }
-  }
-  ui_style_pop(c);
-  ui_layout_pop(c);
-}
-
-static void demo_draw_emitters(
-    UiCanvasComp* c, const SimState* s, const f32 cellSize, const UiVector cellOrigin) {
-
-  ui_layout_push(c);
-  ui_layout_resize(c, UiAlign_BottomLeft, ui_vector(cellSize, cellSize), UiBase_Absolute, Ui_XY);
-
-  ui_style_push(c);
-  ui_style_outline(c, 3);
-
-  for (u32 i = 0; i != s->emitterCount; ++i) {
-    const SimEmitter* emitter = &s->emitters[i];
-    const UiVector    pos     = {
-        cellOrigin.x + emitter->position.x * cellSize,
-        cellOrigin.y + emitter->position.y * cellSize,
-    };
-    ui_layout_set_pos(c, UiBase_Canvas, pos, UiBase_Absolute);
-    ui_canvas_draw_glyph_rotated(
-        c, UiShape_ExpandLess, 0, -emitter->angle + math_pi_f32 * 0.5f, UiFlags_None);
-  }
-
-  ui_style_pop(c);
-  ui_layout_pop(c);
-}
-
-static void demo_draw_label(
-    UiCanvasComp*   c,
-    const SimState* s,
-    const f32       cellSize,
-    const UiVector  cellOrigin,
-    const DemoLabel label) {
-
-  if (label == DemoLabel_None) {
-    return;
-  }
-
-  u8        textBuffer[32];
-  DynString textStr = dynstring_create_over(mem_var(textBuffer));
-
-  const FormatOptsFloat floatOpts = format_opts_float(
-          .minDecDigits = 2, .maxDecDigits = 2, .expThresholdPos = f64_max, .expThresholdNeg = 0);
-
-  ui_layout_push(c);
-  ui_layout_resize(c, UiAlign_BottomLeft, ui_vector(cellSize, cellSize), UiBase_Absolute, Ui_XY);
-  ui_style_push(c);
-  ui_style_variation(c, UiVariation_Monospace);
-  for (u32 y = 0; y != s->height; ++y) {
-    for (u32 x = 0; x != s->width; ++x) {
-      const SimCoord coord = {x, y};
-      ui_layout_set_pos(
-          c, UiBase_Canvas, demo_cell_pos(cellSize, cellOrigin, coord), UiBase_Absolute);
-
-      dynstring_clear(&textStr);
-      switch (label) {
-      case DemoLabel_Smoke:
-        format_write_f64(&textStr, sim_smoke(s, coord), &floatOpts);
-        break;
-      case DemoLabel_Pressure:
-        format_write_f64(&textStr, sim_pressure(s, coord), &floatOpts);
-        break;
-      case DemoLabel_Speed:
-        format_write_f64(&textStr, sim_speed(s, coord), &floatOpts);
-        break;
-      case DemoLabel_Angle:
-        format_write_f64(&textStr, sim_angle(s, coord), &floatOpts);
-        break;
-      case DemoLabel_Divergence:
-        format_write_f64(&textStr, sim_velocity_divergence(s, coord), &floatOpts);
-        break;
-      case DemoLabel_None:
-      case DemoLabel_Count:
-        UNREACHABLE;
-      }
-      ui_canvas_draw_text(c, dynstring_view(&textStr), 8, UiAlign_MiddleCenter, UiFlags_None);
-    }
-  }
-  ui_style_pop(c);
-  ui_layout_pop(c);
-}
-
-static void demo_draw(
-    UiCanvasComp*      c,
-    DemoComp*          d,
-    const f32          cellSize,
-    const UiVector     cellOrigin,
-    const SimCoordFrac inputPos) {
-  switch (d->layer) {
-  case DemoLayer_SmokeInterp:
-    demo_draw_grid_sampled(
-        c, &d->sim.smoke, cellSize, cellOrigin, 0.0f, 0.1f, ui_color_black, ui_color_white, 4);
-    break;
-  case DemoLayer_Smoke:
-    demo_draw_grid(
-        c, &d->sim.smoke, cellSize, cellOrigin, 0.0f, 0.1f, ui_color_black, ui_color_white);
-    break;
-  case DemoLayer_Pressure:
-    demo_draw_grid(
-        c, &d->sim.pressure, cellSize, cellOrigin, -1.0f, 1.0f, ui_color_blue, ui_color_green);
-    break;
-  case DemoLayer_Velocity:
-    demo_draw_velocity_color(c, &d->sim, cellSize, cellOrigin, 25.0f);
-    break;
-  case DemoLayer_Divergence:
-    demo_draw_velocity_divergence(c, &d->sim, cellSize, cellOrigin, 0.01f);
-    break;
-  case DemoLayer_Count:
-    UNREACHABLE
-  }
-  const SimCoord inputPosWhole = sim_coord_round_down(inputPos);
-  if (d->interact && ui_canvas_status(c) == UiStatus_Idle &&
-      sim_coord_valid(inputPosWhole, d->sim.width, d->sim.height)) {
-    demo_draw_input(c, cellSize, cellOrigin, inputPosWhole);
-  }
-  if (d->overlay & DemoOverlay_Solid) {
-    demo_draw_solid(c, &d->sim, cellSize, cellOrigin, ui_color_purple);
-  }
-  if (d->overlay & DemoOverlay_Emitter) {
-    demo_draw_emitters(c, &d->sim, cellSize, cellOrigin);
-  }
-  if (d->overlay & DemoOverlay_Velo) {
-    demo_draw_velocity_edge(c, &d->sim, cellSize, cellOrigin, 0.05f);
-  }
-  if (d->overlay & DemoOverlay_VeloCenter) {
-    demo_draw_velocity_center(c, &d->sim, cellSize, cellOrigin, 0.05f);
-  }
-  demo_draw_label(c, &d->sim, cellSize, cellOrigin, d->label);
 }
 
 static const UiColor  g_demoMenuBg        = {0, 0, 0, 210};
@@ -1588,16 +1025,6 @@ static DemoMenuAction demo_menu(UiCanvasComp* c, DemoComp* d) {
     sim_solid_set_border(&d->sim);
   }
   ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
-  demo_menu_select(c, string_lit("Label"), (i32*)&d->label, g_demoLabelNames, DemoLabel_Count);
-  ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
-  demo_menu_select_bits(
-      c, string_lit("Overlay"), bitset_from_var(d->overlay), g_demoOverlayNames, DemoOverlay_Count);
-  ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
-  demo_menu_select(c, string_lit("Layer"), (i32*)&d->layer, g_demoLayerNames, DemoLayer_Count);
-  ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
-  demo_menu_select(
-      c, string_lit("Interact"), (i32*)&d->interact, g_demoInteractNames, DemoInteract_Count);
-  ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
   demo_menu_numbox_f32(c, string_lit("Density"), &d->sim.density);
   ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
   demo_menu_numbox_f32(c, string_lit("Pres Decay"), &d->sim.pressureDecay);
@@ -1687,35 +1114,10 @@ ecs_system_define(DemoUpdateSys) {
     if (gap_window_key_pressed(winComp, GapKey_R)) {
       sim_clear(&demo->sim);
     }
-    for (DemoInteract interact = 0; interact != DemoInteract_Count; ++interact) {
-      if (gap_window_key_pressed(winComp, GapKey_Alpha1 + interact)) {
-        demo->interact = interact;
-      }
-    }
-    for (DemoLayer layer = 0; layer != DemoLayer_Count; ++layer) {
-      if (gap_window_key_pressed(winComp, GapKey_F1 + layer)) {
-        demo->layer = layer;
-      }
-    }
-    for (u32 overlayBit = 0; overlayBit != DemoOverlay_Count; ++overlayBit) {
-      if (gap_window_key_pressed(winComp, GapKey_F1 + DemoLayer_Count + overlayBit)) {
-        demo->overlay ^= 1 << overlayBit;
-      }
-    }
 
     if (ecs_view_maybe_jump(canvasItr, demo->uiCanvas)) {
       UiCanvasComp* uiCanvas = ecs_view_write_t(canvasItr, UiCanvasComp);
       ui_canvas_reset(uiCanvas);
-      const f32 cellSize = demo_cell_size(uiCanvas, &demo->sim);
-      if (cellSize > f32_epsilon) {
-        const UiVector     cellOrigin = demo_cell_origin(uiCanvas, &demo->sim, cellSize);
-        const SimCoordFrac inputPos   = demo_input(uiCanvas, cellSize, cellOrigin);
-        if (ui_canvas_status(uiCanvas) == UiStatus_Idle) {
-          demo_interact(demo, winComp, inputPos);
-        }
-        demo_draw(uiCanvas, demo, cellSize, cellOrigin, inputPos);
-      }
-      ui_canvas_id_block_next(uiCanvas);
       if (!demo->hideMenu) {
         switch (demo_menu(uiCanvas, demo)) {
         case DemoMenuAction_None:
