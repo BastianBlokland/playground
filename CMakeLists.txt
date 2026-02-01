@@ -134,3 +134,10 @@ endif()
 
 add_custom_target(run.smoke
   COMMAND smoke "--assets" "${CMAKE_SOURCE_DIR}/assets"  VERBATIM USES_TERMINAL)
+
+add_custom_target(run.pack
+  COMMAND pack
+    "--assets" "${CMAKE_SOURCE_DIR}/assets"
+    "--output" "${CMAKE_BINARY_DIR}/assets.blob"
+    "${CMAKE_SOURCE_DIR}/assets/pack.json"
+    VERBATIM USES_TERMINAL)
