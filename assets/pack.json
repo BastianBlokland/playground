@@ -2,7 +2,6 @@
   "roots": [
     "fonts/builtin/*.fonttex",
     "graphics/builtin/*.graphic",
-    "graphics/mapedit/*.graphic",
     "icons/builtin/*.icon",
     "meshes/builtin/*.procmesh",
     "textures/builtin/*.arraytex",
