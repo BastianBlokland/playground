@@ -2,7 +2,7 @@
   "roots": [
     "fonts/builtin/*.fonttex",
     "graphics/builtin/*.graphic",
-    "graphics/smoke_particle.graphic",
+    "graphics/smoke/*.graphic",
     "icons/builtin/*.icon",
     "meshes/builtin/*.procmesh",
     "textures/builtin/*.arraytex",
