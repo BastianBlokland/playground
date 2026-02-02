@@ -24,6 +24,7 @@
 #include "log/logger.h"
 #include "rend/camera.h"
 #include "rend/error.h"
+#include "rend/object.h"
 #include "rend/register.h"
 #include "rend/settings.h"
 #include "ui/canvas.h"
@@ -865,6 +866,7 @@ static void sim_clear(SimState* s) {
 ecs_comp_define(DemoComp) {
   EcsEntityId window;
   EcsEntityId uiCanvas;
+  EcsEntityId rendObj;
   TimeSteady  lastTime;
 
   SimState sim;
@@ -882,13 +884,28 @@ static EcsEntityId demo_create_window(EcsWorld* world, const u16 width, const u1
   return gap_window_create(world, mode, flags, size, icon, titleScratch);
 }
 
-static DemoComp* demo_create(EcsWorld* world, const u16 winWidth, const u16 winHeight) {
+static EcsEntityId
+demo_create_rend_obj(EcsWorld* world, AssetManagerComp* assets, const EcsEntityId window) {
+  EcsEntityId           entity   = ecs_world_entity_create(world);
+  const RendObjectFlags objFlags = RendObjectFlags_Preload;
+  RendObjectComp*       obj      = rend_object_create(world, entity, objFlags);
+  rend_object_set_camera_filter(obj, window);
+
+  const String graphicId = string_lit("graphics/smoke/particle.graphic");
+  rend_object_set_resource(obj, RendObjectRes_Graphic, asset_lookup(world, assets, graphicId));
+
+  return entity;
+}
+
+static DemoComp*
+demo_create(EcsWorld* world, AssetManagerComp* assets, const u16 winWidth, const u16 winHeight) {
   const EcsEntityId global = ecs_world_global(world);
 
   DemoComp* demo = ecs_world_add_t(world, global, DemoComp);
 
   demo->window   = demo_create_window(world, winWidth, winHeight);
   demo->uiCanvas = ui_canvas_create(world, demo->window, UiCanvasCreateFlags_ToBack);
+  demo->rendObj  = demo_create_rend_obj(world, assets, demo->window);
 
   ecs_world_add_t(
       world,
@@ -1136,6 +1153,11 @@ ecs_view_define(UiCanvasView) {
   ecs_access_write(UiCanvasComp);
 }
 
+ecs_view_define(RendObjView) {
+  ecs_view_flags(EcsViewFlags_Exclusive); // Only access the render objects we create.
+  ecs_access_write(RendObjectComp);
+}
+
 ecs_system_define(DemoUpdateSys) {
   EcsView*     globalView = ecs_world_view_t(world, UpdateView);
   EcsIterator* globalItr  = ecs_view_maybe_at(globalView, ecs_world_global(world));
@@ -1155,8 +1177,9 @@ ecs_system_define(DemoUpdateSys) {
 
   sim_update(&demo->sim, dt);
 
-  EcsIterator* canvasItr = ecs_view_itr(ecs_world_view_t(world, UiCanvasView));
-  EcsIterator* winItr    = ecs_view_maybe_at(ecs_world_view_t(world, WindowView), demo->window);
+  EcsIterator* canvasItr  = ecs_view_itr(ecs_world_view_t(world, UiCanvasView));
+  EcsIterator* rendObjItr = ecs_view_itr(ecs_world_view_t(world, RendObjView));
+  EcsIterator* winItr     = ecs_view_maybe_at(ecs_world_view_t(world, WindowView), demo->window);
 
   demo->sim.push  = false;
   demo->sim.pull  = false;
@@ -1211,9 +1234,14 @@ ecs_module_init(demo_module) {
   ecs_register_view(UpdateView);
   ecs_register_view(WindowView);
   ecs_register_view(UiCanvasView);
+  ecs_register_view(RendObjView);
 
   ecs_register_system(
-      DemoUpdateSys, ecs_view_id(UpdateView), ecs_view_id(WindowView), ecs_view_id(UiCanvasView));
+      DemoUpdateSys,
+      ecs_view_id(UpdateView),
+      ecs_view_id(WindowView),
+      ecs_view_id(UiCanvasView),
+      ecs_view_id(RendObjView));
 }
 
 static CliId g_optAssets, g_optWidth, g_optHeight;
@@ -1297,7 +1325,7 @@ bool app_ecs_init(EcsWorld* world, const CliInvocation* invoc) {
   const u16 windowWidth  = (u16)cli_read_u64(invoc, g_optWidth, 1600);
   const u16 windowHeight = (u16)cli_read_u64(invoc, g_optHeight, 1200);
 
-  demo_create(world, windowWidth, windowHeight);
+  demo_create(world, assets, windowWidth, windowHeight);
 
   return true; // Initialization succeeded.
 }
