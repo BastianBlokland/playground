@@ -21,12 +21,15 @@
 #include "gap/input.h"
 #include "gap/register.h"
 #include "gap/window.h"
+#include "geo/box.h"
+#include "geo/quat.h"
 #include "log/logger.h"
 #include "rend/camera.h"
 #include "rend/error.h"
 #include "rend/object.h"
 #include "rend/register.h"
 #include "rend/settings.h"
+#include "rend/tag.h"
 #include "ui/canvas.h"
 #include "ui/layout.h"
 #include "ui/register.h"
@@ -911,11 +914,10 @@ demo_create(EcsWorld* world, AssetManagerComp* assets, const u16 winWidth, const
       world,
       demo->window,
       RendCameraComp,
-      .position  = {.y = 10},
-      .rotation  = geo_quat_ident,
-      .persFov   = 50 * math_deg_to_rad,
-      .persNear  = 0.75f,
-      .orthoSize = 5);
+      .position = {.x = 10, .y = 10},
+      .rotation = geo_quat_forward_to_right,
+      .persFov  = 50 * math_deg_to_rad,
+      .persNear = 0.75f);
 
   RendSettingsComp* set = rend_settings_window_init(world, demo->window);
   set->skyMode          = RendSkyMode_Gradient;
@@ -941,6 +943,35 @@ static void demo_destroy(void* data) {
 static f32 demo_time_to_seconds(const TimeDuration dur) {
   static const f64 g_toSecMul = 1.0 / (f64)time_second;
   return (f32)((f64)dur * g_toSecMul);
+}
+
+static void demo_particle_draw(DemoComp* d, RendObjectComp* obj, const GeoVector pos) {
+  typedef struct {
+    ALIGNAS(16)
+    GeoVector pos;
+  } DrawParticleData;
+  ASSERT(sizeof(DrawParticleData) == 16, "Size needs to match the size defined in glsl");
+  ASSERT(alignof(DrawParticleData) == 16, "Alignment needs to match the glsl alignment");
+
+  const f32      radius = 1.0f;
+  const RendTags tags   = RendTags_None;
+  const GeoBox   bounds = geo_box_from_sphere(pos, radius);
+  *rend_object_add_instance_t(obj, DrawParticleData, tags, bounds) = (DrawParticleData){
+      .pos = pos,
+  };
+}
+
+static void demo_draw(DemoComp* d, RendObjectComp* obj) {
+  for (u32 z = 0; z != d->sim.depth; ++z) {
+    for (u32 y = 0; y != d->sim.height; ++y) {
+      for (u32 x = 0; x != d->sim.width; ++x) {
+        const f32 smoke = sim_grid_get(&d->sim.smoke, (SimCoord){x, y, z});
+        if (smoke > 0.05f) {
+          demo_particle_draw(d, obj, geo_vector(x, y, z));
+        }
+      }
+    }
+  }
 }
 
 static const UiColor  g_demoMenuBg        = {0, 0, 0, 210};
@@ -1178,12 +1209,17 @@ ecs_system_define(DemoUpdateSys) {
   sim_update(&demo->sim, dt);
 
   EcsIterator* canvasItr  = ecs_view_itr(ecs_world_view_t(world, UiCanvasView));
-  EcsIterator* rendObjItr = ecs_view_itr(ecs_world_view_t(world, RendObjView));
+  EcsIterator* rendObjItr = ecs_view_maybe_at(ecs_world_view_t(world, RendObjView), demo->rendObj);
   EcsIterator* winItr     = ecs_view_maybe_at(ecs_world_view_t(world, WindowView), demo->window);
 
   demo->sim.push  = false;
   demo->sim.pull  = false;
   demo->sim.guide = false;
+
+  if (rendObjItr) {
+    RendObjectComp* rendObj = ecs_view_write_t(rendObjItr, RendObjectComp);
+    demo_draw(demo, rendObj);
+  }
 
   if (winItr) {
     GapWindowComp*  winComp  = ecs_view_write_t(winItr, GapWindowComp);
