@@ -1511,8 +1511,12 @@ ecs_system_define(DemoUpdateSys) {
   demo->sim.guide = false;
 
   if (winItr) {
-    GapWindowComp* winComp = ecs_view_write_t(winItr, GapWindowComp);
-
+    GapWindowComp* winComp  = ecs_view_write_t(winItr, GapWindowComp);
+    UiCanvasComp*  uiCanvas = null;
+    if (ecs_view_maybe_jump(canvasItr, demo->uiCanvas)) {
+      uiCanvas = ecs_view_write_t(canvasItr, UiCanvasComp);
+      ui_canvas_reset(uiCanvas);
+    }
     if (gap_window_key_down(winComp, GapKey_Alt) && gap_window_key_pressed(winComp, GapKey_F4)) {
       gap_window_close(winComp);
     }
@@ -1520,31 +1524,30 @@ ecs_system_define(DemoUpdateSys) {
         gap_window_key_pressed(winComp, GapKey_Return)) {
       demo_fullscreen_toggle(winComp);
     }
-    if (gap_window_key_pressed(winComp, GapKey_Tab)) {
-      demo->hideMenu ^= 1;
-    }
-    if (gap_window_key_pressed(winComp, GapKey_R)) {
-      sim_clear(&demo->sim);
-    }
-    for (DemoInteract interact = 0; interact != DemoInteract_Count; ++interact) {
-      if (gap_window_key_pressed(winComp, GapKey_Alpha1 + interact)) {
-        demo->interact = interact;
+    if (!uiCanvas || !ui_canvas_text_editor_active_any(uiCanvas)) {
+      if (gap_window_key_pressed(winComp, GapKey_Tab)) {
+        demo->hideMenu ^= 1;
+      }
+      if (gap_window_key_pressed(winComp, GapKey_R)) {
+        sim_clear(&demo->sim);
+      }
+      for (DemoInteract interact = 0; interact != DemoInteract_Count; ++interact) {
+        if (gap_window_key_pressed(winComp, GapKey_Alpha1 + interact)) {
+          demo->interact = interact;
+        }
+      }
+      for (DemoLayer layer = 0; layer != DemoLayer_Count; ++layer) {
+        if (gap_window_key_pressed(winComp, GapKey_F1 + layer)) {
+          demo->layer = layer;
+        }
+      }
+      for (u32 overlayBit = 0; overlayBit != DemoOverlay_Count; ++overlayBit) {
+        if (gap_window_key_pressed(winComp, GapKey_F1 + DemoLayer_Count + overlayBit)) {
+          demo->overlay ^= 1 << overlayBit;
+        }
       }
     }
-    for (DemoLayer layer = 0; layer != DemoLayer_Count; ++layer) {
-      if (gap_window_key_pressed(winComp, GapKey_F1 + layer)) {
-        demo->layer = layer;
-      }
-    }
-    for (u32 overlayBit = 0; overlayBit != DemoOverlay_Count; ++overlayBit) {
-      if (gap_window_key_pressed(winComp, GapKey_F1 + DemoLayer_Count + overlayBit)) {
-        demo->overlay ^= 1 << overlayBit;
-      }
-    }
-
-    if (ecs_view_maybe_jump(canvasItr, demo->uiCanvas)) {
-      UiCanvasComp* uiCanvas = ecs_view_write_t(canvasItr, UiCanvasComp);
-      ui_canvas_reset(uiCanvas);
+    if (uiCanvas) {
       const f32 cellSize = demo_cell_size(uiCanvas, &demo->sim);
       if (cellSize > f32_epsilon) {
         const UiVector     cellOrigin = demo_cell_origin(uiCanvas, &demo->sim, cellSize);
@@ -1608,8 +1611,8 @@ static void game_crash_handler(const String message, void* ctx) {
   (void)ctx;
   /**
    * Application has crashed.
-   * NOTE: Crashes are always fatal, this handler cannot prevent application shutdown. Care must be
-   * taken while writing this handler as the application is in an unknown state.
+   * NOTE: Crashes are always fatal, this handler cannot prevent application shutdown. Care must
+   * be taken while writing this handler as the application is in an unknown state.
    */
   gap_window_modal_error(message);
 }
