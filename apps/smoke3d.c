@@ -1110,8 +1110,12 @@ ecs_system_define(DemoUpdateSys) {
   demo->sim.guide = false;
 
   if (winItr) {
-    GapWindowComp* winComp = ecs_view_write_t(winItr, GapWindowComp);
-
+    GapWindowComp* winComp  = ecs_view_write_t(winItr, GapWindowComp);
+    UiCanvasComp*  uiCanvas = null;
+    if (ecs_view_maybe_jump(canvasItr, demo->uiCanvas)) {
+      uiCanvas = ecs_view_write_t(canvasItr, UiCanvasComp);
+      ui_canvas_reset(uiCanvas);
+    }
     if (gap_window_key_down(winComp, GapKey_Alt) && gap_window_key_pressed(winComp, GapKey_F4)) {
       gap_window_close(winComp);
     }
@@ -1119,16 +1123,15 @@ ecs_system_define(DemoUpdateSys) {
         gap_window_key_pressed(winComp, GapKey_Return)) {
       demo_fullscreen_toggle(winComp);
     }
-    if (gap_window_key_pressed(winComp, GapKey_Tab)) {
-      demo->hideMenu ^= 1;
+    if (!uiCanvas || !ui_canvas_text_editor_active_any(uiCanvas)) {
+      if (gap_window_key_pressed(winComp, GapKey_Tab)) {
+        demo->hideMenu ^= 1;
+      }
+      if (gap_window_key_pressed(winComp, GapKey_R)) {
+        sim_clear(&demo->sim);
+      }
     }
-    if (gap_window_key_pressed(winComp, GapKey_R)) {
-      sim_clear(&demo->sim);
-    }
-
-    if (ecs_view_maybe_jump(canvasItr, demo->uiCanvas)) {
-      UiCanvasComp* uiCanvas = ecs_view_write_t(canvasItr, UiCanvasComp);
-      ui_canvas_reset(uiCanvas);
+    if (uiCanvas) {
       if (!demo->hideMenu) {
         switch (demo_menu(uiCanvas, demo)) {
         case DemoMenuAction_None:
