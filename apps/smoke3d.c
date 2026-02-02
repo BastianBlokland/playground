@@ -1069,6 +1069,55 @@ static void demo_fullscreen_toggle(GapWindowComp* w) {
   }
 }
 
+static void
+demo_camera_update(GapWindowComp* w, UiCanvasComp* uiCanvas, RendCameraComp* camera, const f32 dt) {
+  const GeoVector camRight   = geo_quat_rotate(camera->rotation, geo_right);
+  const bool      edit       = ui_canvas_text_editor_active_any(uiCanvas);
+  bool            lockCursor = false;
+
+  static const f32 g_panSpeed          = 20.0f;
+  static const f32 g_rotateSensitivity = 4.0f;
+
+  GeoVector panDelta = {0};
+  if (!edit && (gap_window_key_down(w, GapKey_W) || gap_window_key_down(w, GapKey_ArrowUp))) {
+    panDelta.z += 1;
+  }
+  if (!edit && (gap_window_key_down(w, GapKey_S) || gap_window_key_down(w, GapKey_ArrowDown))) {
+    panDelta.z -= 1;
+  }
+  if (!edit && (gap_window_key_down(w, GapKey_D) || gap_window_key_down(w, GapKey_ArrowRight))) {
+    panDelta.x += 1;
+  }
+  if (!edit && (gap_window_key_down(w, GapKey_A) || gap_window_key_down(w, GapKey_ArrowLeft))) {
+    panDelta.x -= 1;
+  }
+  if (geo_vector_mag_sqr(panDelta) > 0) {
+    panDelta         = geo_vector_mul(geo_vector_norm(panDelta), dt * g_panSpeed);
+    panDelta         = geo_quat_rotate(camera->rotation, panDelta);
+    camera->position = geo_vector_add(camera->position, panDelta);
+  }
+
+  if (!edit && (gap_window_key_down(w, GapKey_Alt) || gap_window_key_down(w, GapKey_MouseExtra1))) {
+    const GapVector delta      = gap_window_param(w, GapParam_CursorDelta);
+    const GapVector winSize    = gap_window_param(w, GapParam_WindowSize);
+    f32             deltaNormX = 0.0f, deltaNormY = 0.0f;
+    if (winSize.x > 0 && winSize.y > 0) {
+      deltaNormX = delta.x / (f32)winSize.x * g_rotateSensitivity;
+      deltaNormY = delta.y / (f32)winSize.y * -g_rotateSensitivity;
+    }
+    camera->rotation = geo_quat_mul(geo_quat_angle_axis(deltaNormY, camRight), camera->rotation);
+    camera->rotation = geo_quat_mul(geo_quat_angle_axis(deltaNormX, geo_up), camera->rotation);
+    camera->rotation = geo_quat_norm(camera->rotation);
+    lockCursor       = true;
+  }
+
+  if (lockCursor) {
+    gap_window_flags_set(w, GapWindowFlags_CursorLock | GapWindowFlags_CursorHide);
+  } else {
+    gap_window_flags_unset(w, GapWindowFlags_CursorLock | GapWindowFlags_CursorHide);
+  }
+}
+
 ecs_view_define(FrameUpdateView) { ecs_access_write(RendSettingsGlobalComp); }
 
 ecs_view_define(ErrorView) {
@@ -1077,7 +1126,10 @@ ecs_view_define(ErrorView) {
 }
 
 ecs_view_define(UpdateView) { ecs_access_write(DemoComp); }
-ecs_view_define(WindowView) { ecs_access_write(GapWindowComp); }
+ecs_view_define(WindowView) {
+  ecs_access_write(GapWindowComp);
+  ecs_access_write(RendCameraComp);
+}
 
 ecs_view_define(UiCanvasView) {
   ecs_view_flags(EcsViewFlags_Exclusive); // Only access the canvas's we create.
@@ -1099,8 +1151,9 @@ ecs_system_define(DemoUpdateSys) {
     timeDelta = math_min(timeDelta, time_second); // Avoid huge delta's when process was paused.
   }
   demo->lastTime = timeNew;
+  const f32 dt   = demo_time_to_seconds(timeDelta);
 
-  sim_update(&demo->sim, demo_time_to_seconds(timeDelta));
+  sim_update(&demo->sim, dt);
 
   EcsIterator* canvasItr = ecs_view_itr(ecs_world_view_t(world, UiCanvasView));
   EcsIterator* winItr    = ecs_view_maybe_at(ecs_world_view_t(world, WindowView), demo->window);
@@ -1110,12 +1163,14 @@ ecs_system_define(DemoUpdateSys) {
   demo->sim.guide = false;
 
   if (winItr) {
-    GapWindowComp* winComp  = ecs_view_write_t(winItr, GapWindowComp);
-    UiCanvasComp*  uiCanvas = null;
+    GapWindowComp*  winComp  = ecs_view_write_t(winItr, GapWindowComp);
+    RendCameraComp* camComp  = ecs_view_write_t(winItr, RendCameraComp);
+    UiCanvasComp*   uiCanvas = null;
     if (ecs_view_maybe_jump(canvasItr, demo->uiCanvas)) {
       uiCanvas = ecs_view_write_t(canvasItr, UiCanvasComp);
       ui_canvas_reset(uiCanvas);
     }
+    demo_camera_update(winComp, uiCanvas, camComp, dt);
     if (gap_window_key_down(winComp, GapKey_Alt) && gap_window_key_pressed(winComp, GapKey_F4)) {
       gap_window_close(winComp);
     }
