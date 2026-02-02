@@ -207,8 +207,8 @@ static SimState sim_state_create(const u32 width, const u32 height) {
       .density           = 10.0f,
       .pressureDecay     = 0.5f,
       .velocityDiffusion = 0.5f,
-      .smokeDiffusion    = 0.05f,
-      .smokeDecay        = 0.01f,
+      .smokeDiffusion    = 0.025f,
+      .smokeDecay        = 0.0f,
       .pushPressure      = 100.0f,
       .pullForce         = 100.0f,
       .guideForce        = 500.0f,
@@ -767,6 +767,8 @@ ecs_comp_define(DemoComp) {
 
   SimState sim;
 
+  f32 smokeMin, smokeMax;
+
   bool         hideMenu;
   DemoInteract interact;
   DemoLayer    layer;
@@ -792,6 +794,8 @@ static DemoComp* demo_create(EcsWorld* world, const u16 winWidth, const u16 winH
   demo->window   = demo_create_window(world, winWidth, winHeight);
   demo->uiCanvas = ui_canvas_create(world, demo->window, UiCanvasCreateFlags_ToBack);
   demo->overlay  = DemoOverlay_Default;
+  demo->smokeMin = 0.001f;
+  demo->smokeMax = 0.1f;
 
   rend_settings_window_init(world, demo->window)->flags |= RendFlags_2D;
 
@@ -969,7 +973,10 @@ static void demo_draw_grid_sampled(
     for (u32 x = 0; x != stepsX; ++x) {
       const f32 fracX = ((f32)x / (f32)(stepsX - 1)) * (g->width - 1);
       const f32 v     = sim_grid_sample(g, (SimCoordFrac){fracX, fracY}, 0.0f);
-      const f32 frac  = math_clamp_f32(math_unlerp(minVal, maxVal, v), 0.0f, 1.0f);
+      if (v <= minVal) {
+        continue;
+      }
+      const f32 frac = math_clamp_f32(math_unlerp(minVal, maxVal, v), 0.0f, 1.0f);
 
       ui_style_color(c, ui_color_lerp(minColor, maxColor, frac));
       ui_layout_set_pos(
@@ -1259,7 +1266,15 @@ static void demo_draw(
   switch (d->layer) {
   case DemoLayer_SmokeInterp:
     demo_draw_grid_sampled(
-        c, &d->sim.smoke, cellSize, cellOrigin, 0.0f, 0.1f, ui_color_black, ui_color_white, 4);
+        c,
+        &d->sim.smoke,
+        cellSize,
+        cellOrigin,
+        d->smokeMin,
+        d->smokeMax,
+        ui_color_black,
+        ui_color_white,
+        4);
     break;
   case DemoLayer_Smoke:
     demo_draw_grid(
@@ -1423,6 +1438,10 @@ static DemoMenuAction demo_menu(UiCanvasComp* c, DemoComp* d) {
   demo_menu_numbox_f32(c, string_lit("Pres Decay"), &d->sim.pressureDecay);
   ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
   demo_menu_numbox_f32(c, string_lit("Velo Diff"), &d->sim.velocityDiffusion);
+  ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
+  demo_menu_numbox_f32(c, string_lit("Smoke Min"), &d->smokeMin);
+  ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
+  demo_menu_numbox_f32(c, string_lit("Smoke Max"), &d->smokeMax);
   ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
   demo_menu_numbox_f32(c, string_lit("Smoke Diff"), &d->sim.smokeDiffusion);
   ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
