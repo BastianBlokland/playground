@@ -968,6 +968,9 @@ static void demo_particle_draw(RendObjectComp* obj, const GeoVector p, const Geo
 }
 
 static void demo_draw(DemoComp* d, RendObjectComp* obj) {
+  const GeoColor colorMin = geo_color_black;
+  const GeoColor colorMax = geo_color_gray;
+
   for (u32 z = 0; z != d->sim.depth; ++z) {
     for (u32 y = 0; y != d->sim.height; ++y) {
       for (u32 x = 0; x != d->sim.width; ++x) {
@@ -981,7 +984,7 @@ static void demo_draw(DemoComp* d, RendObjectComp* obj) {
           continue;
         }
         const f32 frac = math_clamp_f32(math_unlerp(d->smokeMin, d->smokeMax, smoke), 0.0f, 1.0f);
-        const GeoColor color = geo_color_lerp(geo_color_black, geo_color_white, frac);
+        const GeoColor color = geo_color_lerp(colorMin, colorMax, frac);
         demo_particle_draw(obj, geo_vector(x, y, z), color);
       }
     }
