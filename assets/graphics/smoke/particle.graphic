@@ -1,0 +1,8 @@
+{
+  "pass": "Forward",
+  "shaders": [
+    { "program": "shaders/smoke/particle.vert" },
+    { "program": "shaders/smoke/particle.frag" }
+  ],
+  "mesh": "meshes/builtin/sphere.procmesh"
+}

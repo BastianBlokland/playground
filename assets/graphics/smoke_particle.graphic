@@ -1,0 +1,16 @@
+{
+  "pass": "Geometry",
+  "shaders": [
+    { "program": "shaders/smoke_standard.vert" },
+    {
+      "program": "shaders/standard.frag",
+      "overrides": [{ "name": "normalMap", "binding": 0, "value": 0 }]
+    }
+  ],
+  "samplers": [
+    { "texture": "textures/builtin/white.proctex" },
+    { "texture": "textures/builtin/one.proctex" },
+    { "texture": "textures/builtin/zero.proctex" }
+  ],
+  "mesh": "meshes/builtin/sphere.procmesh"
+}
