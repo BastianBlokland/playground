@@ -979,7 +979,7 @@ static void demo_draw(DemoComp* d, RendObjectComp* obj) {
           demo_particle_draw(obj, geo_vector(x, y, z), geo_color_purple);
           continue;
         }
-        const f32 smoke = sim_grid_get(&d->sim.smoke, (SimCoord){x, y, z});
+        const f32 smoke = sim_smoke(&d->sim, (SimCoord){x, y, z});
         if (smoke < d->smokeMin) {
           continue;
         }
@@ -1010,32 +1010,6 @@ static void demo_menu_label(UiCanvasComp* c, const String label) {
   ui_layout_push(c);
   ui_layout_grow(c, UiAlign_MiddleCenter, g_demoMenuInset, UiBase_Absolute, Ui_XY);
   ui_label(c, label);
-  ui_layout_pop(c);
-}
-
-static void demo_menu_select(
-    UiCanvasComp* c, const String label, i32* value, const String* options, const u32 optionCount) {
-  demo_menu_frame(c);
-  ui_layout_push(c);
-  ui_layout_grow(c, UiAlign_MiddleCenter, g_demoMenuInset, UiBase_Absolute, Ui_XY);
-  ui_label(c, label);
-  ui_layout_inner(c, UiBase_Current, UiAlign_MiddleRight, g_demoMenuValueSize, UiBase_Current);
-  ui_select(c, value, options, optionCount);
-  ui_layout_pop(c);
-}
-
-static void demo_menu_select_bits(
-    UiCanvasComp* c,
-    const String  label,
-    const BitSet  value,
-    const String* options,
-    const u32     optionCount) {
-  demo_menu_frame(c);
-  ui_layout_push(c);
-  ui_layout_grow(c, UiAlign_MiddleCenter, g_demoMenuInset, UiBase_Absolute, Ui_XY);
-  ui_label(c, label);
-  ui_layout_inner(c, UiBase_Current, UiAlign_MiddleRight, g_demoMenuValueSize, UiBase_Current);
-  ui_select_bits(c, value, options, optionCount);
   ui_layout_pop(c);
 }
 
@@ -1217,6 +1191,12 @@ ecs_system_define(DemoUpdateSys) {
     return;
   }
   DemoComp* demo = ecs_view_write_t(globalItr, DemoComp);
+
+  (void)sim_emitter_get;
+  (void)sim_emitter_remove;
+  (void)sim_solid_flip;
+  (void)sim_speed;
+  (void)sim_angle;
 
   const TimeSteady timeNew   = time_steady_clock();
   TimeDuration     timeDelta = 0;
