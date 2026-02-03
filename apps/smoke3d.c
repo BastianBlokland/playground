@@ -233,7 +233,7 @@ static SimState sim_state_create(const u32 width, const u32 height, const u32 de
       .height = height,
       .depth  = depth,
 
-      .solverIterations  = 128,
+      .solverIterations  = 32,
       .density           = 10.0f,
       .pressureDecay     = 0.5f,
       .velocityDiffusion = 0.5f,
@@ -284,9 +284,9 @@ static bool sim_emitter_add_default(SimState* s, const SimCoord c) {
       s,
       (SimEmitter){
           .angle       = math_pi_f32 * 0.75f,
-          .force       = 1000.0f,
+          .force       = 250.0f,
           .position    = c,
-          .smokeAmount = 5.0f,
+          .smokeAmount = 0.5f,
       });
 }
 
@@ -918,23 +918,23 @@ demo_create(EcsWorld* world, AssetManagerComp* assets, const u16 winWidth, const
       world,
       demo->window,
       RendCameraComp,
-      .position = {.x = 10, .y = 10},
-      .rotation = geo_quat_forward_to_right,
+      .position = {.x = 20, .y = 10, .z = -40},
+      .rotation = geo_quat_ident,
       .persFov  = 50 * math_deg_to_rad,
       .persNear = 0.75f);
 
   RendSettingsComp* set = rend_settings_window_init(world, demo->window);
   set->skyMode          = RendSkyMode_Gradient;
 
-  const u32 simWidth  = 25;
-  const u32 simHeight = 5;
-  const u32 simDepth  = 25;
+  const u32 simWidth  = 24;
+  const u32 simHeight = 16;
+  const u32 simDepth  = 24;
   demo->sim           = sim_state_create(simWidth, simHeight, simDepth);
 
-  sim_emitter_add_default(&demo->sim, (SimCoord){22, 2, 2});
+  sim_emitter_add_default(&demo->sim, (SimCoord){22, 8, 2});
 
-  sim_solid_set(&demo->sim, (SimCoord){19, 2, 4});
-  sim_solid_set(&demo->sim, (SimCoord){20, 2, 5});
+  sim_solid_set(&demo->sim, (SimCoord){19, 8, 4});
+  sim_solid_set(&demo->sim, (SimCoord){20, 8, 5});
 
   return demo;
 }
