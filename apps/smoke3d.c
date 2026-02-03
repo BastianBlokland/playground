@@ -876,6 +876,7 @@ ecs_comp_define(DemoComp) {
   SimState sim;
 
   bool hideMenu;
+  f32  smokeMin, smokeMax;
 };
 
 static EcsEntityId demo_create_window(EcsWorld* world, const u16 width, const u16 height) {
@@ -910,6 +911,8 @@ demo_create(EcsWorld* world, AssetManagerComp* assets, const u16 winWidth, const
   demo->window   = demo_create_window(world, winWidth, winHeight);
   demo->uiCanvas = ui_canvas_create(world, demo->window, UiCanvasCreateFlags_ToBack);
   demo->rendObj  = demo_create_rend_obj(world, assets, demo->window);
+  demo->smokeMin = 0.001f;
+  demo->smokeMax = 0.1f;
 
   ecs_world_add_t(
       world,
@@ -974,9 +977,12 @@ static void demo_draw(DemoComp* d, RendObjectComp* obj) {
           continue;
         }
         const f32 smoke = sim_grid_get(&d->sim.smoke, (SimCoord){x, y, z});
-        if (smoke > 0.05f) {
-          demo_particle_draw(obj, geo_vector(x, y, z), geo_color_white);
+        if (smoke < d->smokeMin) {
+          continue;
         }
+        const f32 frac = math_clamp_f32(math_unlerp(d->smokeMin, d->smokeMax, smoke), 0.0f, 1.0f);
+        const GeoColor color = geo_color_lerp(geo_color_black, geo_color_white, frac);
+        demo_particle_draw(obj, geo_vector(x, y, z), color);
       }
     }
   }
@@ -1097,6 +1103,10 @@ static DemoMenuAction demo_menu(UiCanvasComp* c, DemoComp* d) {
   demo_menu_numbox_f32(c, string_lit("Pres Decay"), &d->sim.pressureDecay);
   ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
   demo_menu_numbox_f32(c, string_lit("Velo Diff"), &d->sim.velocityDiffusion);
+  ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
+  demo_menu_numbox_f32(c, string_lit("Smoke Min"), &d->smokeMin);
+  ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
+  demo_menu_numbox_f32(c, string_lit("Smoke Max"), &d->smokeMax);
   ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
   demo_menu_numbox_f32(c, string_lit("Smoke Diff"), &d->sim.smokeDiffusion);
   ui_layout_next(c, Ui_Up, g_demoMenuSpacing.y);
