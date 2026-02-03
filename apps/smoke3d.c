@@ -968,6 +968,11 @@ static void demo_draw(DemoComp* d, RendObjectComp* obj) {
   for (u32 z = 0; z != d->sim.depth; ++z) {
     for (u32 y = 0; y != d->sim.height; ++y) {
       for (u32 x = 0; x != d->sim.width; ++x) {
+        const SimCoord c = {x, y, z};
+        if (sim_solid(&d->sim, c)) {
+          demo_particle_draw(obj, geo_vector(x, y, z), geo_color_purple);
+          continue;
+        }
         const f32 smoke = sim_grid_get(&d->sim.smoke, (SimCoord){x, y, z});
         if (smoke > 0.05f) {
           demo_particle_draw(obj, geo_vector(x, y, z), geo_color_white);
