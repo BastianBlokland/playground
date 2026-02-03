@@ -22,6 +22,7 @@
 #include "gap/register.h"
 #include "gap/window.h"
 #include "geo/box.h"
+#include "geo/color.h"
 #include "geo/quat.h"
 #include "log/logger.h"
 #include "rend/camera.h"
@@ -945,19 +946,21 @@ static f32 demo_time_to_seconds(const TimeDuration dur) {
   return (f32)((f64)dur * g_toSecMul);
 }
 
-static void demo_particle_draw(DemoComp* d, RendObjectComp* obj, const GeoVector pos) {
+static void demo_particle_draw(RendObjectComp* obj, const GeoVector p, const GeoColor c) {
   typedef struct {
     ALIGNAS(16)
     GeoVector pos;
+    GeoColor  color;
   } DrawParticleData;
-  ASSERT(sizeof(DrawParticleData) == 16, "Size needs to match the size defined in glsl");
+  ASSERT(sizeof(DrawParticleData) == 32, "Size needs to match the size defined in glsl");
   ASSERT(alignof(DrawParticleData) == 16, "Alignment needs to match the glsl alignment");
 
-  const f32      radius = 1.0f;
-  const RendTags tags   = RendTags_None;
-  const GeoBox   bounds = geo_box_from_sphere(pos, radius);
+  const f32      radius                                            = 1.0f;
+  const RendTags tags                                              = RendTags_None;
+  const GeoBox   bounds                                            = geo_box_from_sphere(p, radius);
   *rend_object_add_instance_t(obj, DrawParticleData, tags, bounds) = (DrawParticleData){
-      .pos = pos,
+      .pos   = p,
+      .color = c,
   };
 }
 
@@ -967,7 +970,7 @@ static void demo_draw(DemoComp* d, RendObjectComp* obj) {
       for (u32 x = 0; x != d->sim.width; ++x) {
         const f32 smoke = sim_grid_get(&d->sim.smoke, (SimCoord){x, y, z});
         if (smoke > 0.05f) {
-          demo_particle_draw(d, obj, geo_vector(x, y, z));
+          demo_particle_draw(obj, geo_vector(x, y, z), geo_color_white);
         }
       }
     }
