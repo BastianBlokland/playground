@@ -381,7 +381,16 @@ typedef struct {
           atomVoloClipboard,
           atomTargets,
           atomUtf8String,
-          atomPlainUtf8;
+          atomPlainUtf8,
+          atomTextUriList,
+          atomXdndAware,
+          atomXdndEnter,
+          atomXdndPosition,
+          atomXdndDrop,
+          atomXdndLeave,
+          atomXdndStatus,
+          atomXdndFinished,
+          atomXdndSelection;
 
   const XcbExtensionData* (SYS_DECL* get_extension_data)(XcbConnection*, XcbExtension*);
   const XcbSetup*         (SYS_DECL* get_setup)(XcbConnection*);
@@ -1158,6 +1167,15 @@ static bool pal_init_xcb(Allocator* alloc, Xcb* out, const PalXcbInitFlags flags
   out->atomTargets                 = pal_xcb_atom(out, string_lit("TARGETS"));
   out->atomUtf8String              = pal_xcb_atom(out, string_lit("UTF8_STRING"));
   out->atomPlainUtf8               = pal_xcb_atom(out, string_lit("text/plain;charset=utf-8"));
+  out->atomTextUriList             = pal_xcb_atom(out, string_lit("text/uri-list"));
+  out->atomXdndAware               = pal_xcb_atom(out, string_lit("XdndAware"));
+  out->atomXdndEnter               = pal_xcb_atom(out, string_lit("XdndEnter"));
+  out->atomXdndPosition            = pal_xcb_atom(out, string_lit("XdndPosition"));
+  out->atomXdndDrop                = pal_xcb_atom(out, string_lit("XdndDrop"));
+  out->atomXdndLeave               = pal_xcb_atom(out, string_lit("XdndLeave"));
+  out->atomXdndStatus              = pal_xcb_atom(out, string_lit("XdndStatus"));
+  out->atomXdndFinished            = pal_xcb_atom(out, string_lit("XdndFinished"));
+  out->atomXdndSelection           = pal_xcb_atom(out, string_lit("XdndSelection"));
 
   return true;
 }
